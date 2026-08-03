@@ -1,0 +1,908 @@
+{
+  "sale": {
+    "contract_type_ar": "عقد البيع",
+    "last_updated": "2026-07-14",
+    "notes": [
+      "بيع العقارات يخضع لشروط شكلية إضافية (عقود موثقة وإجراءات قيد بالسجل العقاري)"
+    ],
+    "specific_clauses": [
+      {
+        "clause_id": "sale_001",
+        "title": "بيانات الأطراف",
+        "description": "الأسماء، الجنسيات، المهن، العناوين، أرقام الهويات/السجل",
+        "legal_basis": null,
+        "obligation_level": "mandatory",
+        "search_keywords": ["بيانات أطراف عقد البيع", "الأهلية القانونية للتعاقد في البيع"]
+      },
+      {
+        "clause_id": "sale_002",
+        "title": "وصف المطروح للبيع",
+        "description": "الكمية، النوع، المواصفات الفنية، الموديل، رقم الشاسيه/اللوحة للعربات",
+        "legal_basis": null,
+        "obligation_level": "mandatory",
+        "search_keywords": ["تحديد محل البيع", "شروط صحة معلومية المبيع"]
+      },
+      {
+        "clause_id": "sale_003",
+        "title": "ثمن البيع وطريقة سداده",
+        "description": "مبلغ، عملة، دفعات، مواعيد استحقاق، بنود تقسيط/فائدة إن وُجدت",
+        "legal_basis": null,
+        "obligation_level": "mandatory",
+        "search_keywords": ["الثمن في عقد البيع", "التقسيط وفوائد التأخير في السداد"]
+      },
+      {
+        "clause_id": "sale_004",
+        "title": "تاريخ ومكان التسليم وشروط التسليم",
+        "description": "FOB/CIF أو تسليم داخل المكان",
+        "legal_basis": null,
+        "obligation_level": "mandatory",
+        "search_keywords": ["التزام البائع بتسليم المبيع", "مكان وزمان تنفيذ الالتزام"]
+      },
+      {
+        "clause_id": "sale_005",
+        "title": "انتقال الملكية والمخاطر",
+        "description": "متى تنتقل الملكية ومن يتحمل الخسائر",
+        "legal_basis": null,
+        "obligation_level": "conditional",
+        "search_keywords": ["انتقال ملكية المبيع", "تبعة الهلاك في عقد البيع"]
+      },
+      {
+        "clause_id": "sale_006",
+        "title": "بيان حالة المبيع",
+        "description": "خلافة/مستعمل أو جديد، وجود عيوب معلومة أو مضمونة",
+        "legal_basis": null,
+        "obligation_level": "conditional",
+        "search_keywords": ["الإفصاح عن حالة المبيع", "العيب الظاهر عند التسليم"]
+      },
+      {
+        "clause_id": "sale_007",
+        "title": "ضمان الصفاء من الحقوق والديون والرهون",
+        "description": "أن البائع مالك وحرّ في التصرف",
+        "legal_basis": null,
+        "obligation_level": "mandatory",
+        "search_keywords": ["ضمان التعرض والاستحقاق", "ضمان خلو المبيع من حقوق الغير"]
+      },
+      {
+        "clause_id": "sale_008",
+        "title": "مواعيد الفحص والقبول والاستلام والاعتراضات التقنية",
+        "description": null,
+        "legal_basis": null,
+        "obligation_level": "recommended",
+        "search_keywords": ["فحص المبيع وقبوله", "مواعيد الاعتراض على المطابقة"]
+      },
+      {
+        "clause_id": "sale_009",
+        "title": "أحكام الضمان",
+        "description": "ضمان العيوب الخفية/الظاهرية، مدة الضمان، إجراءات المطالبة",
+        "legal_basis": null,
+        "obligation_level": "conditional",
+        "search_keywords": ["ضمان العيب الخفي", "مدة سقوط دعوى ضمان العيب الخفي"]
+      },
+      {
+        "clause_id": "sale_010",
+        "title": "التعويضات والتأخير",
+        "description": "غرامات تأخير تنفيذ، فوائد مدانة على المتأخر",
+        "legal_basis": null,
+        "obligation_level": "recommended",
+        "search_keywords": ["الشرط الجزائي عن التأخير", "التعويض عن عدم التنفيذ"]
+      },
+      {
+        "clause_id": "sale_011",
+        "title": "أحكام فسخ العقد وإرجاع المبيع واسترداد الثمن",
+        "description": null,
+        "legal_basis": null,
+        "obligation_level": "conditional",
+        "search_keywords": ["فسخ عقد البيع", "آثار الفسخ على المتعاقدين"]
+      },
+      {
+        "clause_id": "sale_012",
+        "title": "أحكام القوة القاهرة والظروف الطارئة",
+        "description": null,
+        "legal_basis": null,
+        "obligation_level": "recommended",
+        "search_keywords": ["القوة القاهرة في العقود", "نظرية الظروف الطارئة"]
+      },
+      {
+        "clause_id": "sale_013",
+        "title": "الضرائب والرسوم والتكاليف",
+        "description": "من يتحمّلها: رسوم نقل الملكية، ضرائب، مصاريف التسجيل",
+        "legal_basis": null,
+        "obligation_level": "conditional",
+        "search_keywords": ["رسوم تسجيل نقل الملكية", "الضرائب على التصرفات العقارية"]
+      },
+      {
+        "clause_id": "sale_014",
+        "title": "طرق الإشعارات والتبليغ",
+        "description": null,
+        "legal_basis": null,
+        "obligation_level": "mandatory",
+        "search_keywords": ["الإخطار القانوني بين المتعاقدين"]
+      },
+      {
+        "clause_id": "sale_015",
+        "title": "إجراءات حل النزاعات",
+        "description": "محاكم مختصة أو تحكيم",
+        "legal_basis": null,
+        "obligation_level": "recommended",
+        "search_keywords": ["الاختصاص القضائي في المنازعات المدنية", "شرط التحكيم"]
+      },
+      {
+        "clause_id": "sale_016",
+        "title": "ملاحق تقنية",
+        "description": "كشوف مواصفات/قائمة قطع الغيار/شهادات الفحص",
+        "legal_basis": null,
+        "obligation_level": "recommended",
+        "search_keywords": ["الملاحق الفنية للعقد ومطابقتها"]
+      }
+    ]
+  },
+
+  "lease": {
+    "contract_type_ar": "عقد الإيجار",
+    "last_updated": "2026-07-14",
+    "notes": [
+      "بعض عقود الإيجار العقاري لمنازل أو عقارات تجارية قد تخضع لقوانين خاصة (قواعد الحماية أو منع الزيادات غير العادلة)"
+    ],
+    "specific_clauses": [
+      {
+        "clause_id": "lease_001",
+        "title": "بيانات الأطراف",
+        "description": null,
+        "legal_basis": null,
+        "obligation_level": "mandatory",
+        "search_keywords": ["بيانات أطراف عقد الإيجار"]
+      },
+      {
+        "clause_id": "lease_002",
+        "title": "وصف العين المؤجرة",
+        "description": "العقار، السيارة، المعدات - وصف تفصيلي ومعرفات",
+        "legal_basis": null,
+        "obligation_level": "mandatory",
+        "search_keywords": ["وصف العين المؤجرة", "تحديد محل عقد الإيجار"]
+      },
+      {
+        "clause_id": "lease_003",
+        "title": "موضوع الإيجار والغرض",
+        "description": "تجاري/سكني/صناعي",
+        "legal_basis": null,
+        "obligation_level": "mandatory",
+        "search_keywords": ["الغرض من الإيجار سكني أو تجاري"]
+      },
+      {
+        "clause_id": "lease_004",
+        "title": "مدة الإيجار",
+        "description": "بداية ونهاية، وبيان مدة التجديد إذا وُجِد",
+        "legal_basis": null,
+        "obligation_level": "mandatory",
+        "search_keywords": ["مدة عقد الإيجار وتجديده"]
+      },
+      {
+        "clause_id": "lease_005",
+        "title": "قيمة الإيجار وطريقة الدفع",
+        "description": "مبلغ، عملة، مواعيد استحقاق، ضمانات تنفيذ",
+        "legal_basis": null,
+        "obligation_level": "mandatory",
+        "search_keywords": ["الأجرة وطريقة سدادها في عقد الإيجار"]
+      },
+      {
+        "clause_id": "lease_006",
+        "title": "قيمة التأمين/الوديعة",
+        "description": "مبلغ التأمين وشروط استرداده",
+        "legal_basis": null,
+        "obligation_level": "recommended",
+        "search_keywords": ["التأمين أو الوديعة في عقد الإيجار وشروط ردها"]
+      },
+      {
+        "clause_id": "lease_007",
+        "title": "مسؤولية الصيانة والإصلاح",
+        "description": "تحمل المستأجر/المؤجر للأعطال والصيانة",
+        "legal_basis": null,
+        "obligation_level": "conditional",
+        "search_keywords": ["التزامات الصيانة بين المؤجر والمستأجر"]
+      },
+      {
+        "clause_id": "lease_008",
+        "title": "حالة العين عند التسليم",
+        "description": "إجراء التسليم والاستلام، محضر استلام وتسليم",
+        "legal_basis": null,
+        "obligation_level": "mandatory",
+        "search_keywords": ["تسليم العين المؤجرة ومحضر الاستلام"]
+      },
+      {
+        "clause_id": "lease_009",
+        "title": "فرض الغرامات على التأخير في السداد وفسخ العقد للإخلال",
+        "description": null,
+        "legal_basis": null,
+        "obligation_level": "recommended",
+        "search_keywords": ["فسخ عقد الإيجار للإخلال بالسداد", "الغرامات على التأخير"]
+      },
+      {
+        "clause_id": "lease_010",
+        "title": "شروط التنازل/الانتقال/التأجير من الباطن",
+        "description": "غالبًا يخضع لرضا المؤجر",
+        "legal_basis": null,
+        "obligation_level": "recommended",
+        "search_keywords": ["التنازل عن الإيجار والإيجار من الباطن"]
+      },
+      {
+        "clause_id": "lease_011",
+        "title": "الضرائب/المصاريف التشغيلية",
+        "description": "المرافق والكهرباء والصيانة والضرائب العقارية",
+        "legal_basis": null,
+        "obligation_level": "recommended",
+        "search_keywords": ["توزيع الأعباء والمصاريف التشغيلية بين طرفي الإيجار"]
+      },
+      {
+        "clause_id": "lease_012",
+        "title": "إنهاء العقد قبل المدة وآثاره",
+        "description": "تعويضات، إشعار مسبق",
+        "legal_basis": null,
+        "obligation_level": "recommended",
+        "search_keywords": ["إنهاء عقد الإيجار قبل انتهاء مدته"]
+      },
+      {
+        "clause_id": "lease_013",
+        "title": "شروط التجديد الآلي أو نهائيّة الإخلاء",
+        "description": null,
+        "legal_basis": null,
+        "obligation_level": "recommended",
+        "search_keywords": ["التجديد التلقائي لعقد الإيجار وإخلاء العين"]
+      },
+      {
+        "clause_id": "lease_014",
+        "title": "التأمين والمسؤولية تجاه الغير",
+        "description": null,
+        "legal_basis": null,
+        "obligation_level": "recommended",
+        "search_keywords": ["التأمين على العين المؤجرة والمسؤولية تجاه الغير"]
+      },
+      {
+        "clause_id": "lease_015",
+        "title": "القانون الواجب التطبيق وحل النزاعات",
+        "description": null,
+        "legal_basis": null,
+        "obligation_level": "recommended",
+        "search_keywords": ["الاختصاص القضائي في منازعات الإيجار"]
+      }
+    ]
+  },
+
+  "contracting": {
+    "contract_type_ar": "عقد المقاولة",
+    "last_updated": "2026-07-14",
+    "notes": [
+      "عقود المقاولات الكبرى غالباً تتطلب شروط تسجيل وشهادات واعتمادات ومطابقة لأنظمة الأمن والسلامة"
+    ],
+    "specific_clauses": [
+      {
+        "clause_id": "contracting_001",
+        "title": "بيانات الأطراف",
+        "description": "صاحب العمل/المقاول/المهندس المشرف إذا وُجد",
+        "legal_basis": null,
+        "obligation_level": "mandatory",
+        "search_keywords": ["بيانات أطراف عقد المقاولة"]
+      },
+      {
+        "clause_id": "contracting_002",
+        "title": "وصف العمل وبيان نطاق الأعمال",
+        "description": "مواصفات فنية، رسوم، جداول كمية، مراجع تقنية",
+        "legal_basis": null,
+        "obligation_level": "mandatory",
+        "search_keywords": ["نطاق أعمال المقاولة والمواصفات الفنية"]
+      },
+      {
+        "clause_id": "contracting_003",
+        "title": "قيمة العقد وطريقة الحساب",
+        "description": "مبلغ إجمالي/مقاولة بالأقساط/وحدات سعرية/تسعير بالكمّية",
+        "legal_basis": null,
+        "obligation_level": "mandatory",
+        "search_keywords": ["قيمة عقد المقاولة وطريقة حساب الأجر"]
+      },
+      {
+        "clause_id": "contracting_004",
+        "title": "مواعيد التنفيذ",
+        "description": "بداية العمل، مدة التنفيذ، مواعيد تسليم مراحل/التسليم النهائي",
+        "legal_basis": null,
+        "obligation_level": "mandatory",
+        "search_keywords": ["مواعيد تنفيذ أعمال المقاولة وتسليمها"]
+      },
+      {
+        "clause_id": "contracting_005",
+        "title": "شروط تسوية المطالبات والفواتير وطرق الدفع",
+        "description": "دفعات مرحلية، شروط قبول الفواتير، الضمانات",
+        "legal_basis": null,
+        "obligation_level": "mandatory",
+        "search_keywords": ["الدفعات المرحلية والمستخلصات في عقد المقاولة"]
+      },
+      {
+        "clause_id": "contracting_006",
+        "title": "ضمان حسن التنفيذ والضمان لمدة بعد التسليم",
+        "description": "ضمان جودة، مدة الضمان، إجراءات الإصلاح",
+        "legal_basis": null,
+        "obligation_level": "recommended",
+        "search_keywords": ["ضمان حسن التنفيذ في عقد المقاولة"]
+      },
+      {
+        "clause_id": "contracting_007",
+        "title": "تأمينات وأمنيات",
+        "description": "شيك ضمان، ضمان بنكي، استقطاع حفاظاً على الحقوق",
+        "legal_basis": null,
+        "obligation_level": "recommended",
+        "search_keywords": ["الضمانات البنكية وخطابات الضمان"]
+      },
+      {
+        "clause_id": "contracting_008",
+        "title": "المواصفات الفنية والمعايير والجودة والاختبارات وقبول الأعمال",
+        "description": null,
+        "legal_basis": null,
+        "obligation_level": "conditional",
+        "search_keywords": ["مواصفات الجودة واختبارات قبول الأعمال"]
+      },
+      {
+        "clause_id": "contracting_009",
+        "title": "تحويلات العمل الإضافية",
+        "description": "أمر تغيير/Change Order وكيفية التسعير",
+        "legal_basis": null,
+        "obligation_level": "mandatory",
+        "search_keywords": ["أوامر التغيير في عقود المقاولة"]
+      },
+      {
+        "clause_id": "contracting_010",
+        "title": "المسؤولية عن الحوادث وتعويضات الغير والتأمين على العمال",
+        "description": null,
+        "legal_basis": null,
+        "obligation_level": "mandatory",
+        "search_keywords": ["مسؤولية المقاول عن حوادث العمل"]
+      },
+      {
+        "clause_id": "contracting_011",
+        "title": "القوى القاهرة وتأثيرها على المواعيد والأداء",
+        "description": null,
+        "legal_basis": null,
+        "obligation_level": "recommended",
+        "search_keywords": ["القوة القاهرة وأثرها على مواعيد التنفيذ"]
+      },
+      {
+        "clause_id": "contracting_012",
+        "title": "إنهاء العقد وفسخه لعدم الأداء",
+        "description": "تعويضات، إجراءات استلام الأعمال",
+        "legal_basis": null,
+        "obligation_level": "conditional",
+        "search_keywords": ["فسخ عقد المقاولة لعدم التنفيذ"]
+      },
+      {
+        "clause_id": "contracting_013",
+        "title": "السرية وملكية الرسومات والوثائق والحقوق الفكرية",
+        "description": null,
+        "legal_basis": null,
+        "obligation_level": "recommended",
+        "search_keywords": ["ملكية الرسومات والوثائق الفنية"]
+      },
+      {
+        "clause_id": "contracting_014",
+        "title": "حل النزاعات",
+        "description": "لجان فنية، تحكيم، محاكم",
+        "legal_basis": null,
+        "obligation_level": "recommended",
+        "search_keywords": ["حل نزاعات عقود المقاولة"]
+      }
+    ]
+  },
+
+  "agency": {
+    "contract_type_ar": "عقد الوكالة/التوكيل",
+    "last_updated": "2026-07-14",
+    "notes": [
+      "لبيع أو نقل عقار أو رهن يلزم توكيل رسمي موثق، لذا شكل التوكيل يصبح إجباريًا حسب نوع التصرف"
+    ],
+    "specific_clauses": [
+      {
+        "clause_id": "agency_001",
+        "title": "بيانات الموكل والوكيل وصلاحيات الوكالة",
+        "description": "نطاق التوكيل: بيع، شراء، استلام مبالغ، توقيع عقود",
+        "legal_basis": null,
+        "obligation_level": "mandatory",
+        "search_keywords": ["نطاق صلاحيات الوكيل في التوكيل"]
+      },
+      {
+        "clause_id": "agency_002",
+        "title": "شكل التوكيل",
+        "description": "كتابي/سند رسمي/موثق - التصرف في العقارات عادة يتطلب توكيلًا محرراً رسمياً موثقاً",
+        "legal_basis": null,
+        "obligation_level": "mandatory",
+        "search_keywords": ["الشكل الرسمي للتوكيل في التصرفات العقارية"]
+      },
+      {
+        "clause_id": "agency_003",
+        "title": "مدة التوكيل",
+        "description": "محددة أو مفتوحة، قابلة للسحب",
+        "legal_basis": null,
+        "obligation_level": "recommended",
+        "search_keywords": ["مدة التوكيل وقابليته للسحب"]
+      },
+      {
+        "clause_id": "agency_004",
+        "title": "تعليمات محددة وقيود التمويل أو التفويض الفرعي",
+        "description": "إمكانية الوكيل في التفويض من الباطن",
+        "legal_basis": null,
+        "obligation_level": "recommended",
+        "search_keywords": ["التفويض من الباطن في عقد الوكالة"]
+      },
+      {
+        "clause_id": "agency_005",
+        "title": "أتعاب الوكيل أو نسبة العمولة وكيفية تحصيلها",
+        "description": null,
+        "legal_basis": null,
+        "obligation_level": "recommended",
+        "search_keywords": ["أتعاب الوكيل ونسبة العمولة"]
+      },
+      {
+        "clause_id": "agency_006",
+        "title": "المسؤولية والتأكيدات",
+        "description": "الوكيل لا يملك ملكية ولا يتحمل إلا عن إهمال/تجاوز الولاية",
+        "legal_basis": null,
+        "obligation_level": "mandatory",
+        "search_keywords": ["مسؤولية الوكيل عن تجاوز حدود الوكالة"]
+      },
+      {
+        "clause_id": "agency_007",
+        "title": "قواعد التبليغ وإنهاء الوكالة وسحبها وإبلاغ الطرف الثالث",
+        "description": null,
+        "legal_basis": null,
+        "obligation_level": "mandatory",
+        "search_keywords": ["إنهاء الوكالة وإخطار الغير بانتهائها"]
+      },
+      {
+        "clause_id": "agency_008",
+        "title": "حفظ السجلات والإفصاح عن الصفقات",
+        "description": null,
+        "legal_basis": null,
+        "obligation_level": "recommended",
+        "search_keywords": ["التزام الوكيل بحفظ سجلات الصفقات والإفصاح عنها"]
+      },
+      {
+        "clause_id": "agency_009",
+        "title": "أحكام حل المنازعات",
+        "description": null,
+        "legal_basis": null,
+        "obligation_level": "recommended",
+        "search_keywords": ["الاختصاص القضائي في منازعات الوكالة"]
+      }
+    ]
+  },
+
+  "partnership": {
+    "contract_type_ar": "عقد الشركة / شراكة الأشخاص",
+    "last_updated": "2026-07-14",
+    "notes": [
+      "تأسيس شركات الأشخاص أو الالتزام بالأنظمة التجارية يتطلب إجراءات تسجيلية في السجل التجاري، وبعض الشروط الشكلية لا يمكن تجاوزها"
+    ],
+    "specific_clauses": [
+      {
+        "clause_id": "partnership_001",
+        "title": "بيانات الشركاء ونسب مساهمة كل شريك",
+        "description": "رأس المال، النسبة، المساهمات العينية/النقدية",
+        "legal_basis": null,
+        "obligation_level": "mandatory",
+        "search_keywords": ["حصص الشركاء في رأس المال"]
+      },
+      {
+        "clause_id": "partnership_002",
+        "title": "اسم الشركة، غرضها، المقر، المدة إن وُجدت",
+        "description": null,
+        "legal_basis": null,
+        "obligation_level": "mandatory",
+        "search_keywords": ["اسم الشركة وغرضها ومقرها ومدتها"]
+      },
+      {
+        "clause_id": "partnership_003",
+        "title": "حصص الأرباح والخسائر وتوزيعها وآجال توزيع الأرباح",
+        "description": null,
+        "legal_basis": null,
+        "obligation_level": "mandatory",
+        "search_keywords": ["توزيع الأرباح والخسائر بين الشركاء"]
+      },
+      {
+        "clause_id": "partnership_004",
+        "title": "إدارة الشركة وصلاحيات المديرين، آليات اتخاذ القرار",
+        "description": "اجتماعات الجمعية العامة ونصابها",
+        "legal_basis": null,
+        "obligation_level": "mandatory",
+        "search_keywords": ["إدارة الشركة وصلاحيات المديرين"]
+      },
+      {
+        "clause_id": "partnership_005",
+        "title": "قواعد القيد في السجل التجاري أو الشروط الشكلية المطلوبة",
+        "description": null,
+        "legal_basis": null,
+        "obligation_level": "mandatory",
+        "search_keywords": ["القيد في السجل التجاري والشروط الشكلية للشركات"]
+      },
+      {
+        "clause_id": "partnership_006",
+        "title": "قيود على نقل الحصص أو دخول شركاء جدد وحقوق الاكتتاب",
+        "description": null,
+        "legal_basis": null,
+        "obligation_level": "conditional",
+        "search_keywords": ["نقل حصص الشركاء ودخول شركاء جدد"]
+      },
+      {
+        "clause_id": "partnership_007",
+        "title": "حسابات الشركة والميزانية والتدقيق وإقرار الحسابات",
+        "description": null,
+        "legal_basis": null,
+        "obligation_level": "mandatory",
+        "search_keywords": ["حسابات الشركة والميزانية والتدقيق"]
+      },
+      {
+        "clause_id": "partnership_008",
+        "title": "أسباب وحالات حل الشركة وإجراءات التصفية",
+        "description": null,
+        "legal_basis": null,
+        "obligation_level": "mandatory",
+        "search_keywords": ["حل الشركة وإجراءات التصفية"]
+      },
+      {
+        "clause_id": "partnership_009",
+        "title": "قواعد تسوية النزاعات والاختصاص القضائي أو التحكيم",
+        "description": null,
+        "legal_basis": null,
+        "obligation_level": "recommended",
+        "search_keywords": ["الاختصاص القضائي أو التحكيم في منازعات الشركات"]
+      },
+      {
+        "clause_id": "partnership_010",
+        "title": "واجبات السرية وعدم المنافسة",
+        "description": "إن رغّب الشركاء",
+        "legal_basis": null,
+        "obligation_level": "recommended",
+        "search_keywords": ["السرية وعدم منافسة الشركاء"]
+      },
+      {
+        "clause_id": "partnership_011",
+        "title": "بنود حل النزاعات الداخلية والآليات البديلة",
+        "description": "وساطة/تحكيم",
+        "legal_basis": null,
+        "obligation_level": "recommended",
+        "search_keywords": ["الوساطة والتحكيم كآلية بديلة لحل النزاعات"]
+      }
+    ]
+  },
+
+  "deposit": {
+    "contract_type_ar": "عقد الوديعة",
+    "last_updated": "2026-07-14",
+    "notes": [
+      "ودائع الأموال لدى بنوك ومؤسسات مالية تخضع لقواعد واعتبارات أخرى (مثل قانون البنوك والائتمان)"
+    ],
+    "specific_clauses": [
+      {
+        "clause_id": "deposit_001",
+        "title": "بيانات المودع والمستودع ووصف الشيء المودَع",
+        "description": "نقدي/عيني/أوراق",
+        "legal_basis": null,
+        "obligation_level": "mandatory",
+        "search_keywords": ["بيانات المودع والمستودع ووصف الوديعة"]
+      },
+      {
+        "clause_id": "deposit_002",
+        "title": "تقرير عن طبيعة الوديعة",
+        "description": "حفظ مؤقت/خدمة تخزين/وديعة نقدية",
+        "legal_basis": null,
+        "obligation_level": "mandatory",
+        "search_keywords": ["طبيعة عقد الوديعة"]
+      },
+      {
+        "clause_id": "deposit_003",
+        "title": "مدة الوديعة وشروط الاسترداد وإجراءات طلب الاستلام",
+        "description": null,
+        "legal_basis": null,
+        "obligation_level": "mandatory",
+        "search_keywords": ["مدة الوديعة وإجراءات استرداد الشيء المودع"]
+      },
+      {
+        "clause_id": "deposit_004",
+        "title": "مقابل حفظ الشيء وشروط الدفع",
+        "description": "أتعاب/أجر حفظ",
+        "legal_basis": null,
+        "obligation_level": "recommended",
+        "search_keywords": ["أجر حفظ الوديعة"]
+      },
+      {
+        "clause_id": "deposit_005",
+        "title": "مسؤولية المستودع عن حفظ الشيء وحدود المسؤولية",
+        "description": "تأمين، مسؤولية عن الحريق/السرقة",
+        "legal_basis": null,
+        "obligation_level": "conditional",
+        "search_keywords": ["مسؤولية المستودع عن هلاك أو تلف الوديعة"]
+      },
+      {
+        "clause_id": "deposit_006",
+        "title": "شروط حمل/الاستبدال والتصرف في حالة الفقدان أو التلف",
+        "description": null,
+        "legal_basis": null,
+        "obligation_level": "conditional",
+        "search_keywords": ["التصرف في الوديعة حال فقدها أو تلفها"]
+      },
+      {
+        "clause_id": "deposit_007",
+        "title": "تعليمات بشأن إفشاء معلومات/سرية محتويات الوديعة",
+        "description": null,
+        "legal_basis": null,
+        "obligation_level": "recommended",
+        "search_keywords": ["سرية محتويات الوديعة"]
+      },
+      {
+        "clause_id": "deposit_008",
+        "title": "استثناءات",
+        "description": "أشياء ممنوعة، مواد خطرة",
+        "legal_basis": null,
+        "obligation_level": "recommended",
+        "search_keywords": ["الأشياء الممنوع إيداعها"]
+      },
+      {
+        "clause_id": "deposit_009",
+        "title": "آليات التحقيق في الخلافات والتعويضات",
+        "description": null,
+        "legal_basis": null,
+        "obligation_level": "recommended",
+        "search_keywords": ["تسوية الخلافات في عقد الوديعة"]
+      }
+    ]
+  },
+
+  "guarantee": {
+    "contract_type_ar": "عقد الكفالة / الضمان",
+    "last_updated": "2026-07-14",
+    "notes": [
+      "كفالة البنوك أو الضمانات البنكية المصرفية لها طابع مستقل وتخضع للقواعد المصرفية"
+    ],
+    "specific_clauses": [
+      {
+        "clause_id": "guarantee_001",
+        "title": "بيانات الضامن (الكافِل) والمكفول/الدائن والالتزام المكفول",
+        "description": null,
+        "legal_basis": null,
+        "obligation_level": "mandatory",
+        "search_keywords": ["بيانات الكفيل والمكفول والالتزام المكفول"]
+      },
+      {
+        "clause_id": "guarantee_002",
+        "title": "نص واضح على التزام الضمان وحدوده",
+        "description": "مبلغ الضمان، هل هو ضمان تبعية أم مستقل",
+        "legal_basis": null,
+        "obligation_level": "mandatory",
+        "search_keywords": ["حدود التزام الكفالة ومبلغ الضمان"]
+      },
+      {
+        "clause_id": "guarantee_003",
+        "title": "مدة الضمان وشروط العمل به",
+        "description": "متى يبدأ الضمان ومتى ينتهي",
+        "legal_basis": null,
+        "obligation_level": "mandatory",
+        "search_keywords": ["مدة الكفالة وسريانها"]
+      },
+      {
+        "clause_id": "guarantee_004",
+        "title": "صورة عن الالتزام الأساسي أو عقد الأصل الذي يُؤمّن",
+        "description": "مرجعية الدين",
+        "legal_basis": null,
+        "obligation_level": "mandatory",
+        "search_keywords": ["الالتزام الأصلي المضمون بالكفالة"]
+      },
+      {
+        "clause_id": "guarantee_005",
+        "title": "شروط المطالبة على الضامن وإثبات إخلال المدين",
+        "description": "بيان نوع الكفالة: تبعية أم مستقلة",
+        "legal_basis": null,
+        "obligation_level": "mandatory",
+        "search_keywords": ["شروط الرجوع على الكفيل وإثبات إخلال المدين", "الكفالة التبعية والكفالة المستقلة"]
+      },
+      {
+        "clause_id": "guarantee_006",
+        "title": "استثناءات وتحديد المسؤولية والتنازل الجزئي عن الحقوق",
+        "description": null,
+        "legal_basis": null,
+        "obligation_level": "recommended",
+        "search_keywords": ["حدود مسؤولية الكفيل والتنازل الجزئي عن الحقوق"]
+      },
+      {
+        "clause_id": "guarantee_007",
+        "title": "أحكام قيد الإخلاء أو الحد من التزامات الضامن",
+        "description": "الضمان بالحصص؛ حدود المسؤولية",
+        "legal_basis": null,
+        "obligation_level": "recommended",
+        "search_keywords": ["الكفالة بالحصص وتحديد المسؤولية"]
+      },
+      {
+        "clause_id": "guarantee_008",
+        "title": "توقيعات وتصديق الشكل",
+        "description": "قد يكون إجباريًا في معاملات معينة (قروض عقارية)",
+        "legal_basis": null,
+        "obligation_level": "conditional",
+        "search_keywords": ["التوثيق الرسمي لعقد الكفالة"]
+      },
+      {
+        "clause_id": "guarantee_009",
+        "title": "أحكام حل المنازعات والاختصاص",
+        "description": null,
+        "legal_basis": null,
+        "obligation_level": "recommended",
+        "search_keywords": ["الاختصاص القضائي في منازعات الكفالة"]
+      }
+    ]
+  },
+
+  "employment_contract": {
+    "contract_type_ar": "عقد العمل الفردي",
+    "last_updated": "2026-07-23",
+    "notes": [
+      "يتطلب إبرام عقد العمل تقديم مستندات ثبوتية إجبارية من العامل لاستكمال ملف الخدمة وقيده في التأمينات وهي: صورة الرقم القومي، أصل شهادة الميلاد، أصل المؤهل الدراسي، صحيفة الحالة الجنائية (فيش وتشبيه)، شهادة المعاملة العسكرية، كعب العمل (نموذج 15)، وبرينت تأمينات اجتماعية."
+    ],
+    "contract_introduction": {
+      "purpose": "يقتصر هذا القسم على التوثيق والتعريف بالطرفين وبياناتهم القانونية ونوع العقد دون الدخول في التفاصيل التنفيذية.",
+      "required_elements": [
+        {
+          "element_id": "intro_001",
+          "title": "بيانات التوثيق الزمني والمكاني",
+          "description": "تاريخ تحرير العقد ومكان التحرير لإثبات مكان ونشوء الالتزام قانوناً."
+        },
+        {
+          "element_id": "intro_002",
+          "title": "الهوية القانونية للطرف الأول (صاحب العمل)",
+          "description": "الاسم التجاري بالسجل التجاري، الرقم الضريبي، المقر الرئيسي، واسم الممثل القانوني وصفته."
+        },
+        {
+          "element_id": "intro_003",
+          "title": "الهوية القانونية للطرف الثاني (الموظف)",
+          "description": "الاسم الرباعي، الرقم القومي (14 رقماً)، الجنسية، العنوان التفصيلي، وسائلاً للاتصال المعتمدة."
+        },
+        {
+          "element_id": "intro_004",
+          "title": "التوصيف القانوني لنوع العقد وطبيعته",
+          "description": "بيان ما إذا كان العقد محدد المدة أو غير محدد المدة أو لإنجاز عمل معين."
+        },
+        {
+          "element_id": "intro_005",
+          "title": "محددات الوظيفة الأساسية",
+          "description": "المسمى الوظيفي، المقر التفصيلي للعمل، وتاريخ بدء سريان العقد ومباشرة العمل."
+        },
+        {
+          "element_id": "intro_006",
+          "title": "الإحالات القانونية والإقرار بالرضا",
+          "description": "إقرار الطرفين بالأهلية القانونية والخضوع للأحكام القانونية ذات الصلة."
+        }
+      ]
+    },
+    "specific_clauses": [
+      {
+        "clause_id": "employment_001",
+        "title": "بيانات الطرفين والتمثيل القانوني",
+        "description": "تحديد الهوية الكاملة للطرفين وأرقام هوياتهما أو سجلهما التجاري وعناوين المراسلات الرسمية، وبيان صفة ممثل الشركة المفوض بالتوقيع ونطاق صلاحياته.",
+        "legal_basis": null,
+        "obligation_level": "mandatory",
+        "search_keywords": ["بيانات أطراف عقد العمل", "التمثيل القانوني لصاحب العمل"]
+      },
+      {
+        "clause_id": "employment_002",
+        "title": "طبيعة العقد ومدته وفترة الاختبار",
+        "description": "تحديد نوع العقد (محدد المدة أو غير محدد المدة) وتاريخ بدايته ونهايته، وتحديد فترة الاختبار إن وُجدت وشروط سريانها.",
+        "legal_basis": null,
+        "obligation_level": "mandatory",
+        "search_keywords": ["فترة الاختبار في عقد العمل", "مدة عقد العمل محدد المدة وغير محدد المدة"]
+      },
+      {
+        "clause_id": "employment_003",
+        "title": "المسمى الوظيفي والتكليف بالمهام",
+        "description": "بيان المسمى الوظيفي والتبعية الإدارية ونطاق المهام المكلف بها العامل، وضوابط تكليفه بأعمال تخرج عن نطاق وظيفته الأصلية.",
+        "legal_basis": null,
+        "obligation_level": "mandatory",
+        "search_keywords": ["تغيير طبيعة العمل", "التكليف بعمل مغاير في عقد العمل"]
+      },
+      {
+        "clause_id": "employment_004",
+        "title": "الأجر والبدلات وساعات العمل الإضافي",
+        "description": "تحديد الأجر الأساسي والبدلات ومواعيد صرفها، وتنظيم أجر ساعات العمل الإضافي عن العمل النهاري والليلي وأيام العطلات.",
+        "legal_basis": null,
+        "obligation_level": "mandatory",
+        "search_keywords": ["أجر ساعات العمل الإضافي", "مواعيد صرف الأجر في عقد العمل"]
+      },
+      {
+        "clause_id": "employment_005",
+        "title": "مقر العمل وساعات العمل والراحة",
+        "description": "تحديد مقر العمل الرئيسي والحد الأقصى لساعات العمل اليومية والأسبوعية، وفترات الراحة اليومية ويوم الراحة الأسبوعية.",
+        "legal_basis": null,
+        "obligation_level": "mandatory",
+        "search_keywords": ["ساعات العمل اليومية", "الراحة الأسبوعية للعامل"]
+      },
+      {
+        "clause_id": "employment_006",
+        "title": "الإجازات السنوية والرسمية والمرضية والوضع",
+        "description": "تنظيم استحقاق العامل للإجازة السنوية ومدتها وزيادتها بحسب سنوات الخدمة أو السن، والإجازات الرسمية والمرضية وإجازة الوضع.",
+        "legal_basis": null,
+        "obligation_level": "mandatory",
+        "search_keywords": ["الإجازة السنوية للعامل", "إجازة الوضع للعاملة", "الإجازة المرضية"]
+      },
+      {
+        "clause_id": "employment_007",
+        "title": "التأمين الاجتماعي والصحي",
+        "description": "التزام صاحب العمل بالاشتراك عن العامل في التأمين الاجتماعي والتأمين الصحي منذ استلامه العمل وفقاً للنسب المقررة قانوناً.",
+        "legal_basis": null,
+        "obligation_level": "mandatory",
+        "search_keywords": ["الاشتراك في التأمين الاجتماعي", "التأمين الصحي على العمال"]
+      },
+      {
+        "clause_id": "employment_008",
+        "title": "اللوائح الداخلية والتحقيق والجزاءات",
+        "description": "التزام العامل بلائحة العمل والجزاءات التأديبية، وضمان عدم توقيع أي جزاء إلا بعد تحقيق كتابي يكفل حق العامل في الدفاع عن نفسه.",
+        "legal_basis": null,
+        "obligation_level": "mandatory",
+        "search_keywords": ["التحقيق قبل توقيع الجزاء التأديبي", "لائحة الجزاءات العمالية"]
+      },
+      {
+        "clause_id": "employment_009",
+        "title": "إنهاء العقد والإشعار والتعويضات",
+        "description": "تنظيم حالات انتهاء العقد ومهلة الإشعار المسبق الواجبة بحسب مدة الخدمة، والتعويض المستحق عند إنهاء العقد دون سبب مشروع.",
+        "legal_basis": null,
+        "obligation_level": "mandatory",
+        "search_keywords": [ "مهلة الإخطار","إخطار قبل الإنهاء","عقد غير محدد المدة","إشعار مسبق بإنهاء عقد العمل"]
+      },
+      {
+        "clause_id": "employment_010",
+        "title": "سرية المعلومات وحظر المنافسة",
+        "description": "التزام العامل بسرية أسرار العمل وبياناته، وشروط صحة الاتفاق على عدم منافسة صاحب العمل بعد انتهاء العلاقة العمالية.",
+        "legal_basis": null,
+        "obligation_level": "recommended",
+        "search_keywords": ["شرط عدم المنافسة بعد انتهاء العمل", "سرية أسرار العمل"]
+      },
+      {
+        "clause_id": "employment_011",
+        "title": "الملكية الفكرية والاختراعات",
+        "description": "بيان مآل ملكية الابتكارات والبرمجيات والمصنفات التي ينتجها العامل أثناء أداء عمله وبسببه.",
+        "legal_basis": null,
+        "obligation_level": "recommended",
+        "search_keywords": ["الملكية الفكرية لأعمال الموظف", "حقوق المصنفات الوظيفية"]
+      },
+      {
+        "clause_id": "employment_012",
+        "title": "السلامة والصحة المهنية",
+        "description": "التزام المنشأة بتوفير وسائل الوقاية والحماية الشخصية وتدريب العاملين، والتزام العامل باتباع تعليمات السلامة والصحة المهنية.",
+        "legal_basis": null,
+        "obligation_level": "recommended",
+        "search_keywords": ["السلامة والصحة المهنية في بيئة العمل", "وسائل الوقاية للعمال"]
+      },
+      {
+        "clause_id": "employment_013",
+        "title": "القوة القاهرة والظروف الطارئة",
+        "description": "تنظيم أثر الأحداث الاستثنائية الخارجة عن إرادة الطرفين على تنفيذ الالتزامات التعاقدية، وإجراءات الإخطار الواجبة.",
+        "legal_basis": null,
+        "obligation_level": "recommended",
+        "search_keywords": ["القوة القاهرة في عقد العمل", "الظروف الطارئة وتعليق الالتزامات"]
+      },
+      {
+        "clause_id": "employment_014",
+        "title": "تصاريح عمل وإقامة الأجانب",
+        "description": "التزام صاحب العمل، في حال كون العامل غير مصري، باستخراج وتجديد تصاريح العمل والإقامة الرسمية وتحمل الرسوم المقررة قانوناً.",
+        "legal_basis": null,
+        "obligation_level": "conditional",
+        "search_keywords": ["تصريح عمل الأجانب", "إقامة العامل الأجنبي"]
+      },
+      {
+        "clause_id": "employment_015",
+        "title": "القانون الواجب التطبيق وحل النزاعات",
+        "description": "تحديد القانون الواجب التطبيق على العقد وآلية تسوية الخلافات ودياً قبل اللجوء إلى القضاء المختص.",
+        "legal_basis": null,
+        "obligation_level": "mandatory",
+        "search_keywords": ["الاختصاص القضائي في منازعات العمل", "التسوية الودية لمنازعات العمل"]
+      },
+      {
+        "clause_id": "employment_016",
+        "title": "نسخ العقد واللغة والشهود",
+        "description": "تحديد عدد نسخ العقد المكتوبة باللغة العربية والجهات التي تودع لديها كل نسخة.",
+        "legal_basis": null,
+        "obligation_level": "mandatory",
+        "search_keywords": ["نسخ عقد العمل والتوثيق", "إيداع عقد العمل لدى الجهات المختصة"]
+      }
+    ]
+  }
+}
