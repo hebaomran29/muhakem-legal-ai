@@ -93,6 +93,9 @@ export function Workspace() {
   const [memoJobId, setMemoJobId] = useState<string | null>(null);
   const [contractData, setContractData] = useState<ContractResult | null>(null);
   const [contractJobId, setContractJobId] = useState<string | null>(null);
+  // لو مش null، يبقى احنا بنكمل جلسة موجودة — استخدمي نفس الـ id بدل ما
+  // نعمل session جديدة كل مرة (وده اللي كان بيسبب التكرار في السايدبار)
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
 
   const chat = useSessionChat();
   const memory = useMemory();
@@ -113,11 +116,14 @@ export function Workspace() {
       setMemoData(memoResult);
       if (jobId) setMemoJobId(jobId);
 
-      // احفظ الجلسة في localStorage بمعرّف فريد لكل توليدة
+      // احفظ الجلسة — لو دي إعادة فتح جلسة قايمة استخدمي نفس الـ id
+      // (upsert)، ولو جلسة جديدة اعملي id جديد واحد بس واحفظيه في الـ state
       if (memoResult.sections && memoResult.sections.length > 0) {
         const info = extractMemoInfo(memoResult, initialPrompt);
+        const id = currentSessionId ?? `memo-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        if (!currentSessionId) setCurrentSessionId(id);
         saveSession({
-          id: `memo-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          id,
           title: info.title,
           kind: 'memo',
           meta: info.preview,
@@ -127,6 +133,7 @@ export function Workspace() {
           jobId: jobId || null,
           screenId: 'memo',
           pinned: false,
+          data: memoResult,
         });
       }
     }
@@ -136,11 +143,13 @@ export function Workspace() {
       setContractData(contractResult);
       if (jobId) setContractJobId(jobId);
 
-      // احفظ الجلسة بمعرّف فريد
+      // نفس منطق الـ upsert بتاع المذكرات
       if (contractResult.clauses && contractResult.clauses.length > 0) {
         const info = extractContractInfo(contractResult, initialPrompt);
+        const id = currentSessionId ?? `contract-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        if (!currentSessionId) setCurrentSessionId(id);
         saveSession({
-          id: `contract-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          id,
           title: info.title,
           kind: 'contract-gen',
           meta: info.preview,
@@ -150,6 +159,7 @@ export function Workspace() {
           jobId: jobId || null,
           screenId: 'contract-gen',
           pinned: false,
+          data: contractResult,
         });
       }
     }
@@ -162,8 +172,10 @@ export function Workspace() {
         consultation: 'استشارة قانونية',
       };
       const previewText = initialPrompt.length > 50 ? initialPrompt.slice(0, 50) + '...' : initialPrompt;
+      const id = currentSessionId ?? `${artifactKind}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      if (!currentSessionId) setCurrentSessionId(id);
       saveSession({
-        id: `${artifactKind}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        id,
         title: `${kindLabel[artifactKind] || artifactKind}`,
         kind: artifactToChatKind(artifactKind),
         meta: previewText,
@@ -238,6 +250,7 @@ export function Workspace() {
     setMemoJobId(null);
     setContractData(null);
     setContractJobId(null);
+    setCurrentSessionId(null);
   }, [chat, memory]);
 
   /* ── Expose new chat for shell ── */
@@ -255,9 +268,6 @@ export function Workspace() {
 
   /* ── Open an existing session from sidebar/history ── */
   const handleOpenSession = useCallback((session: SessionCard) => {
-    // ابدأ جلسة جديدة مع الـ prompt القديم
-    handleNewSession();
-
     const kindMap: Partial<Record<string, ArtifactType>> = {
       'contract-gen': 'contract',
       review: 'review',
@@ -265,11 +275,37 @@ export function Workspace() {
       research: 'research',
     };
     const kind = kindMap[session.screenId];
-    if (kind) {
+    if (!kind) return;
+
+    // لو النتيجة الكاملة متخزنة في الجلسة، اعرضيها فورًا من غير أي
+    // API call — ده اللي بيحل مشكلة الـ regenerate + التكرار في السايدبار
+    if (session.data) {
+      chat.reset();
+      memory.clear();
+      setCurrentSessionId(session.id);
       setInitialPrompt(session.prompt);
-      startThinking(kind as TaskKind, session.prompt);
+
+      if (kind === 'memo') {
+        setMemoData(session.data as MemoResult);
+        setMemoJobId(session.jobId ?? null);
+      } else if (kind === 'contract') {
+        setContractData(session.data as ContractResult);
+        setContractJobId(session.jobId ?? null);
+      }
+
+      setActiveKind(kind);
+      setPhase('artifact');
+      setArtifactKey((k) => k + 1);
+      return;
     }
-  }, [handleNewSession, startThinking]);
+
+    // fallback لجلسات قديمة اتحفظت قبل هذا الإصلاح ومفيهاش data محفوظة —
+    // اضطراريًا لازم regenerate، بس بنفس الـ id عشان منكررش الجلسة
+    handleNewSession();
+    setCurrentSessionId(session.id);
+    setInitialPrompt(session.prompt);
+    startThinking(kind as TaskKind, session.prompt);
+  }, [handleNewSession, startThinking, chat, memory]);
 
   /* ── Expose openSession for shell ── */
   useEffect(() => {

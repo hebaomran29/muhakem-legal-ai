@@ -22,12 +22,15 @@ export interface SessionCard {
   updatedAt: number;         // timestamp
   pinned: boolean;
 
-  /* ── البيانات الفعلية (خفيفة للـ localStorage) ── */
-  /* البيانات الثقيلة (المذكرة/العقد الكامل) محفوظة في ملف منفصل أو
-     يمكن إعادة توليدها من الـ prompt + jobId */
+  /* ── البيانات الفعلية ── */
   prompt: string;            // الـ prompt الأصلي
-  jobId: string | null;      // job ID من الباك (لو موجود)
+  jobId: string | null;      // job ID من الباك (بيموت مع أي restart — مفيش DB)
   screenId: string;          // screen لتفتحها: 'memo' | 'contract-gen' | 'review' | 'research'
+
+  /* النتيجة الكاملة — لازم تتخزن هنا لأن مفيش backend DB، فـ localStorage
+     هو المصدر الوحيد. لو موجودة، فتح الجلسة يعرضها مباشرة من غير أي
+     regenerate. */
+  data?: unknown;
 }
 
 /* ═══ Constants ═══ */
