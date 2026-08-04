@@ -268,6 +268,7 @@ def _run_job(job_id: str):
                     "critic_issues": result["validation"]["critic_issues"],
                 },
                 "case_facts": case_facts,
+                "sources": result.get("sources", {}),
             }
     except Exception as e:
         with _jobs_lock:
@@ -304,13 +305,133 @@ def _classify_target_section(message: str, sections: list[dict]) -> str:
 
 أخرجي فقط الـ id بتاع القسم الأنسب لهذا الطلب من القائمة أعلاه بالحرف
 (مثال: waqai) — بدون أي شرح. لو الطلب مش واضح لأي قسم بالتحديد، أخرجي: unclear"""
-    response = pipeline.llm.chat.completions.create(
-        model=pipeline.LLM_MODEL,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.0, max_tokens=15,
-    )
-    result = response.choices[0].message.content.strip()
+    try:
+        result = pipeline.llm_text([{"role": "user", "content": prompt}],
+                                    temperature=0.0, max_tokens=15)
+    except RuntimeError:
+        return "unclear"
     return result if result in SECTION_IDS else "unclear"
+
+
+TASK_LABELS = {
+    "memo": "مذكرة دفاع",
+    "contract": "صياغة عقد",
+    "review": "مراجعة عقد",
+    "research": "بحث قانوني",
+    "consultation": "استشارة قانونية",
+}
+
+
+def _classify_chat_action(message: str, current_task: str) -> dict:
+    """الراوتر الموحّد لأي شات تعديل (مذكرة أو عقد) — نداء LLM واحد بيحدد
+    واحدة من 3 حالات، مش اتنين بس زي _classify_chat_intent القديمة:
+      - edit: تعديل/حذف/إعادة صياغة جزء من {current_task} الحالية
+      - question: سؤال معلوماتي عن {current_task} الحالية من غير تعديل
+      - switch_task: طلب مهمة مختلفة تمامًا (مش استكمال لنفس المهمة الحالية)
+
+    ده اللي بيسد الفجوة اللي كانت موجودة: قبل كده لو المحامية جوه شات
+    المذكرة كتبت "عايزة كمان أعمل عقد إيجار"، الشات كان يحاول يفهمها كتعديل
+    أو سؤال عن المذكرة نفسه، من غير أي وعي إنها بتطلب مهمة تانية خالص.
+
+    Fail-safe: أي غموض أو فشل في الرد → ترجع "edit" (السلوك الأصلي قبل
+    الإضافة دي) عشان منكسرش حاجة شغالة."""
+    other_tasks = ", ".join(f"{k} ({v})" for k, v in TASK_LABELS.items() if k != current_task)
+    prompt = f"""أنتِ الراوتر الموحّد في نظام "مُحَكِّم" القانوني. المستخدم حالياً
+جوه شاشة "{TASK_LABELS.get(current_task, current_task)}" بيتكلم في شات التعديل بتاعها.
+
+صنّفي رسالته كواحدة من 3 حالات بس:
+- "edit": طلب تعديل/حذف/إعادة صياغة جزء من {TASK_LABELS.get(current_task, current_task)} الحالية
+- "question": سؤال معلوماتي عن {TASK_LABELS.get(current_task, current_task)} الحالية
+  (مرجع قانوني، توضيح، سبب) من غير طلب تعديل
+- "switch_task": طلب مهمة مختلفة تمامًا مش استكمال لـ {TASK_LABELS.get(current_task, current_task)}
+  الحالية — يعني عايزة تبدأ واحدة من: {other_tasks}
+
+⚠️ لو الرسالة ممكن تتفهم كتعديل على نفس القضية الحالية (حتى لو مش واضح
+100%)، صنّفيها "edit" أو "question" — متفترضيش switch_task إلا لو صريح
+إن المستخدم بيتكلم عن قضية أو مهمة مختلفة تمامًا.
+
+رسالة المستخدم: "{message}"
+
+لو switch_task، حددي كمان new_intent من: memo, contract, review, research, consultation
+
+أجب بـ JSON فقط بدون أي نص إضافي:
+{{"action": "edit|question|switch_task", "new_intent": "..." أو null}}"""
+
+    fallback = {"action": "edit", "new_intent": None}
+    try:
+        raw = pipeline.llm_text([{"role": "user", "content": prompt}],
+                                 temperature=0.0, max_tokens=60)
+    except RuntimeError:
+        return fallback
+
+    raw = re.sub(r"^```json|```$", "", raw, flags=re.MULTILINE).strip()
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return fallback
+
+    action = data.get("action") if data.get("action") in ("edit", "question", "switch_task") else "edit"
+    new_intent = data.get("new_intent") if data.get("new_intent") in TASK_LABELS else None
+    if action == "switch_task" and new_intent is None:
+        action = "edit"  # لو مش متأكدة من نوع المهمة الجديدة، متسيبهاش تعلّق فاضي
+    return {"action": action, "new_intent": new_intent}
+
+
+def _format_sources_for_chat(sources: dict) -> str:
+    """يبني نص مختصر بالمصادر (أحكام نقض + مواد قانونية) اللي اتجابت
+    وقت توليد المذكرة، عشان الشات يقدر يستشهد بيها لو المحامية سألت."""
+    if not sources:
+        return "لا توجد مصادر محفوظة لهذه المذكرة."
+
+    blocks = []
+    cassation = sources.get("cassation") or []
+    if cassation:
+        lines = []
+        for c in cassation:
+            meta = c.get("metadata", {})
+            ref = meta.get("ruling_num") or meta.get("ruling_number") or ""
+            year = meta.get("ruling_year") or meta.get("year") or ""
+            label = f"طعن رقم {ref} لسنة {year}" if ref else c.get("title", "حكم نقض")
+            blocks.append(f"[{label}]\n{c.get('content', '')[:500]}")
+        blocks.insert(0, "## أحكام نقض:")
+
+    laws = (sources.get("laws") or []) + (sources.get("laws2") or [])
+    if laws:
+        law_lines = ["## مواد قانونية:"]
+        for l in laws:
+            title = l.get("title", "")
+            art = l.get("article_num", "")
+            label = f"{title} - مادة {art}" if art else title
+            law_lines.append(f"[{label}]\n{l.get('content', '')[:500]}")
+        blocks.extend(law_lines)
+
+    return "\n\n".join(blocks) if blocks else "لا توجد مصادر محفوظة لهذه المذكرة."
+
+
+def _answer_legal_question(message: str, sources: dict, sections: list[dict]) -> str:
+    """يرد على سؤال معلوماتي بالاستناد فقط للمصادر المحفوظة وقت التوليد —
+    من غير ما يعدّل المذكرة، ومن غير اختراع مراجع مش موجودة فعلاً."""
+    sources_text = _format_sources_for_chat(sources)
+    sections_text = "\n\n".join(f"### {s['title']}\n{s['body']}" for s in sections)
+
+    prompt = f"""أنتِ مساعدة قانونية بترد على سؤال محامية بخصوص مذكرة دفاع كتبتها.
+جاوبي بالاستناد فقط للمصادر الموجودة تحت — ممنوع تخترعي رقم طعن أو مادة قانونية
+مش موجودة في المصادر دي. لو السؤال عن مرجع مش موجود في المصادر، قولي بوضوح
+إن المرجع ده مش من ضمن اللي استُخدم وقت التوليد.
+
+## نص المذكرة الحالي:
+{sections_text}
+
+## المصادر المستخدمة وقت التوليد:
+{sources_text}
+
+## سؤال المحامية:
+{message}
+
+جاوبي بإيجاز ودقة، واذكري المرجع المحدد (رقم الطعن أو المادة) لو موجود:"""
+
+    return pipeline.llm_text([{"role": "user", "content": prompt}],
+                              temperature=0.1, max_tokens=600)
 
 
 def _rewrite_section(section: dict, message: str, crime_type: str | None,
@@ -343,12 +464,8 @@ def _rewrite_section(section: dict, message: str, crime_type: str | None,
 
 أخرجي نص القسم الجديد فقط:"""
 
-    response = pipeline.llm.chat.completions.create(
-        model=pipeline.LLM_MODEL,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.2, max_tokens=1500,
-    )
-    return response.choices[0].message.content.strip()
+    return pipeline.llm_text([{"role": "user", "content": prompt}],
+                              temperature=0.2, max_tokens=1500)
 
 
 def _handle_chat_edit(job: dict, message: str) -> dict:
@@ -356,6 +473,26 @@ def _handle_chat_edit(job: dict, message: str) -> dict:
     sections = result["sections"]
     crime_type = result["crime_type"]
     legal_nature = result["legal_nature"]
+
+    action = _classify_chat_action(message, "memo")
+    if action["action"] == "switch_task":
+        new_intent = action["new_intent"]
+        return {
+            "reply": f"تمام، فهمت إنك عايزة {TASK_LABELS[new_intent]} — هحوّلك دلوقتي.",
+            "updated_sections": None,
+            "change_card": None,
+            "warnings": [],
+            "switch_task": {"intent": new_intent, "enriched_prompt": message},
+        }
+    if action["action"] == "question":
+        answer = _answer_legal_question(message, result.get("sources", {}), sections)
+        return {
+            "reply": answer,
+            "updated_sections": None,
+            "change_card": None,
+            "warnings": [],
+            "switch_task": None,
+        }
 
     target_id = _classify_target_section(message, sections)
     is_delete_request = any(k in message for k in DELETE_KEYWORDS)
@@ -512,13 +649,7 @@ async def router_endpoint(payload: RouterRequest):
             conversation.append({"role": msg.role, "content": msg.text})
         conversation.append({"role": "user", "content": payload.current_text})
 
-        response = pipeline.llm.chat.completions.create(
-            model=pipeline.LLM_MODEL,
-            messages=conversation,
-            temperature=0.1,
-            max_tokens=600,
-        )
-        raw = response.choices[0].message.content.strip()
+        raw = pipeline.llm_text(conversation, temperature=0.1, max_tokens=600)
         # handle possible markdown fences
         if raw.startswith("```"):
             raw = re.sub(r"^```(?:json)?\s*", "", raw)
@@ -665,6 +796,8 @@ def chat_edit(payload: ChatEditRequest):
         response = _handle_chat_edit(job, payload.message)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"فشل التعديل: {e}")
+
+    response.setdefault("switch_task", None)
 
     with _jobs_lock:
         job["chat_history"].append({"role": "user", "message": payload.message})
@@ -881,10 +1014,54 @@ def _rewrite_contract_clause(clause: dict, message: str, contract_type_ar: str,
     return cp.generate_single_clause(modified_clause, contract_type_ar, laws_context)
 
 
+def _answer_contract_question(message: str, clauses: list[dict]) -> str:
+    """يرد على سؤال معلوماتي عن العقد (مرجع قانوني لبند معين، توضيح، إلخ)
+    عن طريق استرجاع مباشر من قاعدة القوانين — من غير ما يعدّل العقد."""
+    rag_resources = cp.load_rag_resources()
+    laws_context = cp.retrieve_laws_context(message, rag_resources, top_k=4)
+    clauses_text = "\n\n".join(f"بند {c['index']} - {c['title']}:\n{c['body']}" for c in clauses)
+
+    prompt = f"""أنتِ مساعدة قانونية بترد على سؤال عن عقد. جاوبي بالاستناد فقط
+للمرجع القانوني الموجود تحت — ممنوع تخترعي مادة قانونية مش موجودة. لو المرجع
+غير متاح، قولي بوضوح إن معندكيش مرجع قانوني محدد لده.
+
+## بنود العقد الحالية:
+{clauses_text}
+
+## مرجع قانوني متاح:
+{laws_context or 'لا يوجد مرجع قانوني ذو صلة متاح.'}
+
+## سؤال المستخدم:
+{message}
+
+جاوبي بإيجاز ودقة:"""
+
+    return pipeline.llm_text([{"role": "user", "content": prompt}],
+                              temperature=0.1, max_tokens=600)
+
+
 def _handle_contract_chat_edit(job: dict, message: str) -> dict:
     result = job["result"]
     clauses = result["clauses"]
     contract_type_ar = result.get("contract_type_ar", "")
+
+    action = _classify_chat_action(message, "contract")
+    if action["action"] == "switch_task":
+        new_intent = action["new_intent"]
+        return {
+            "reply": f"تمام، فهمت إنك عايز {TASK_LABELS[new_intent]} — هحوّلك دلوقتي.",
+            "updated_clauses": None,
+            "change_card": None,
+            "switch_task": {"intent": new_intent, "enriched_prompt": message},
+        }
+    if action["action"] == "question":
+        answer = _answer_contract_question(message, clauses)
+        return {
+            "reply": answer,
+            "updated_clauses": None,
+            "change_card": None,
+            "switch_task": None,
+        }
 
     target_idx = _classify_contract_clause(message, clauses)
     is_delete = any(k in message for k in CONTRACT_DELETE_KEYWORDS)
@@ -1022,6 +1199,8 @@ def contract_chat_edit(payload: ContractChatEditRequest):
         response = _handle_contract_chat_edit(job, payload.message)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"فشل تعديل العقد: {e}")
+
+    response.setdefault("switch_task", None)
 
     with _contract_jobs_lock:
         job["chat_history"].append({"role": "user", "message": payload.message})

@@ -92,6 +92,36 @@ def embed(text: str) -> list[float]:
     return _embedder.encode([text], normalize_embeddings=True)[0].tolist()
 
 
+def llm_text(messages: list[dict], temperature: float = 0.2, max_tokens: int = 1000,
+             model: str | None = None, retries: int = 1) -> str:
+    """نداء موحّد لأي completion من الـ LLM، بيتأكد إن الرد فيه نص فعلي قبل
+    ما يرجّعه. أحيانًا OpenRouter بيرجّع content=None (تعطل مؤقت من المزوّد،
+    أو رفض ضمني) — من غير الفحص ده، أي كود بيستخدم .strip() على الرد بيكسر
+    فورًا برسالة غامضة 'NoneType' object has no attribute 'strip'. هنا بنعمل
+    retry واحد تلقائي، ولو لسه فاضي بنرفع خطأ واضح بدل الكراش الصامت."""
+    _ensure_pipeline()
+    if not _llm:
+        raise RuntimeError("LLM مش متاح — تأكد من OPENROUTER_KEY في ملف .env")
+
+    last_content = None
+    for attempt in range(retries + 1):
+        response = _llm.chat.completions.create(
+            model=model or LLM_MODEL, messages=messages,
+            temperature=temperature, max_tokens=max_tokens,
+        )
+        choice = response.choices[0] if response.choices else None
+        content = choice.message.content if choice and choice.message else None
+        if content is not None and content.strip():
+            return content.strip()
+        last_content = content
+
+    raise RuntimeError(
+        "لم يرجّع نموذج الذكاء الاصطناعي ردًا نصيًا بعد إعادة المحاولة — "
+        "غالبًا تعطل مؤقت من مزوّد الـ API (OpenRouter). جرّبي تاني بعد شوية."
+        + (f" [finish_reason: {choice.finish_reason}]" if choice and last_content is None else "")
+    )
+
+
 CRIME_CATEGORIES = {
     "مخدرات": "قضايا حيازة أو اتجار مواد مخدرة حشيش هيروين كوكايين حبوب تخديرية",
     "سلاح وذخيره": "قضايا حيازة أسلحة نارية ذخيرة مسدس بندقية سلاح أبيض بدون ترخيص",
@@ -246,14 +276,10 @@ def detect_crime_type_llm(charge_text: str, case_facts: str) -> str | None:
 أخرجي فقط اسم الفئة بالحرف تماماً كما ورد أعلاه إذا كانت تطابق الجوهر فعلياً،
 أو "غير محدد" لو الجوهر قانون أو نشاط مختلف — بدون أي شرح إضافي."""
 
-    _ensure_pipeline()
-    if not _llm:
+    try:
+        result = llm_text([{"role": "user", "content": prompt}], temperature=0.0, max_tokens=30)
+    except RuntimeError:
         return None
-    response = _llm.chat.completions.create(
-        model=LLM_MODEL, messages=[{"role": "user", "content": prompt}],
-        temperature=0.0, max_tokens=30,
-    )
-    result = response.choices[0].message.content.strip()
     return result if result in CRIME_CATEGORIES else None
 
 
@@ -569,15 +595,8 @@ def extract_intake_from_freetext(user_text: str) -> dict:
 نص القضية:
 {user_text}
 """
-    _ensure_pipeline()
-    if not _llm:
-        raise RuntimeError("LLM مش متاح — تأكد من OPENROUTER_KEY في ملف .env")
-    response = _llm.chat.completions.create(
-        model=LLM_MODEL,
-        messages=[{"role": "user", "content": extraction_prompt}],
-        temperature=0.0, max_tokens=2000,
-    )
-    raw = response.choices[0].message.content.strip()
+    raw = llm_text([{"role": "user", "content": extraction_prompt}],
+                    temperature=0.0, max_tokens=2000)
     raw = re.sub(r"^```json|```$", "", raw, flags=re.MULTILINE).strip()
     try:
         intake = json.loads(raw)
@@ -925,31 +944,19 @@ def expand_facts_and_extract_logic(case_facts: str, retrieved_context: dict) -> 
 وقائع الدعوى:
 [اكتب هنا وقائع الدعوى بأسلوب محامي مخضرم: هجومي، جازم، يفضح التناقضات دون أن يسأل أسئلة، ومطبّقاً فيه التوجيه الإجرائي أعلاه فقط]"""
 
-    _ensure_pipeline()
-    if not _llm:
-        raise RuntimeError("LLM مش متاح — تأكد من OPENROUTER_KEY في ملف .env")
-    response = _llm.chat.completions.create(
-        model=LLM_MODEL,
-        messages=[{"role": "user", "content": expander_prompt}],
-        temperature=0.2, max_tokens=1000,
-    )
-    return response.choices[0].message.content
+    return llm_text([{"role": "user", "content": expander_prompt}],
+                     temperature=0.2, max_tokens=1000)
 
 
 def generate_memo(case_facts: str, system_prompt: str) -> str:
     """توليد مذكرة الدفاع عبر الـ LLM."""
-    _ensure_pipeline()
-    if not _llm:
-        raise RuntimeError("LLM مش متاح — تأكد من OPENROUTER_KEY في ملف .env")
-    response = _llm.chat.completions.create(
-        model=LLM_MODEL,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"وقائع القضية:\n{case_facts.strip()}"},
-        ],
-        temperature=0.15, max_tokens=7000,
-    )
-    return response.choices[0].message.content
+    if not case_facts or not case_facts.strip():
+        raise RuntimeError("وقائع القضية وصلت فاضية لمرحلة التوليد — على الأغلب خطوة سابقة "
+                            "(تلخيص/توسيع الوقائع) فشلت في الرجوع بنص. جرّبي تاني.")
+    return llm_text([
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": f"وقائع القضية:\n{case_facts.strip()}"},
+    ], temperature=0.15, max_tokens=7000)
 
 
 CROSS_CONTAMINATION_TERMS = {
@@ -1193,14 +1200,11 @@ def legal_coherence_critic(memo: str, crime_type: str | None,
 أخرج فقط JSON: {{"issues": [{{"type": "...", "description": "...", "severity": "high|medium"}}]}}
 إن لم تجد مشكلة: {{"issues": []}}"""
 
-    _ensure_pipeline()
-    if not _llm:
-        return {"issues": [], "parse_error": "LLM مش متاح"}
-    response = _llm.chat.completions.create(
-        model=LLM_MODEL, messages=[{"role": "user", "content": critic_prompt}],
-        temperature=0.0, max_tokens=800,
-    )
-    raw = response.choices[0].message.content.strip()
+    try:
+        raw = llm_text([{"role": "user", "content": critic_prompt}],
+                        temperature=0.0, max_tokens=800)
+    except RuntimeError as e:
+        return {"issues": [], "parse_error": str(e)}
     raw = re.sub(r"^```json|```$", "", raw, flags=re.MULTILINE).strip()
     try:
         return json.loads(raw)
