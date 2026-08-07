@@ -60,11 +60,17 @@ export type ChatChangeCard = {
   new_text: string;
 };
 
+export type SwitchTaskSignal = {
+  intent: 'memo' | 'contract' | 'review' | 'research' | 'consultation';
+  enriched_prompt: string;
+};
+
 export type ChatResponse = {
   reply: string;
   updated_sections: MemoSection[] | null;
   change_card: ChatChangeCard | null;
   warnings: string[];
+  switch_task: SwitchTaskSignal | null;
 };
 
 /* ════════════════════════════════════════════════
@@ -160,6 +166,7 @@ export type ContractChatResponse = {
   reply: string;
   updated_clauses: ContractClause[] | null;
   change_card: ContractChatChangeCard | null;
+  switch_task: SwitchTaskSignal | null;
 };
 
 /* ════════════════════════════════════════════════
@@ -408,5 +415,6 @@ function mockSendMemoChat(_jobId: string, message: string): Promise<ChatResponse
     updated_sections: null,
     change_card: null,
     warnings: [],
+    switch_task: null,
   });
 }

@@ -3,7 +3,7 @@ import { Scale, FileText, Check, Loader2, AlertCircle, X, GitCompare, AlertTrian
 import { DocumentToolbar } from '../components/DocumentToolbar';
 import { Badge } from '../components/ui';
 import { useMemoChat, type MemoChatMessage } from '../lib/useMemoChat';
-import { saveMemo, type MemoResult, type CaseMetadata, type MemoSection, type ChatChangeCard } from '../lib/api';
+import { saveMemo, type MemoResult, type CaseMetadata, type MemoSection, type ChatChangeCard, type SwitchTaskSignal } from '../lib/api';
 import { cn } from '../lib/cn';
 import type { ChatProps } from './ContractGen';
 
@@ -30,12 +30,14 @@ export function Memo({
   jobId,
   embedded = false,
   chatProps,
+  onSwitchTask,
 }: {
   initialPrompt?: string;
   memoData?: MemoResult | null;
   jobId?: string | null;
   embedded?: boolean;
   chatProps?: ChatProps;
+  onSwitchTask?: (signal: SwitchTaskSignal) => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [active, setActive] = useState('waqai');
@@ -67,7 +69,7 @@ export function Memo({
   const lawyerName = meta?.lawyer_name ?? null;
   const lawyerLicense = meta?.lawyer_license ?? null;
 
-  const memoChat = useMemoChat(jobId ?? null, handleSectionsUpdate);
+  const memoChat = useMemoChat(jobId ?? null, handleSectionsUpdate, onSwitchTask);
   const { context, setContextLabel, clearContext } = memoChat;
 
   useEffect(() => {

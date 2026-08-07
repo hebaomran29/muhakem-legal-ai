@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
-import { sendContractChat, type ContractChatResponse, type ContractChatChangeCard, type ContractClause } from './api';
+import { sendContractChat, type ContractChatResponse, type ContractChatChangeCard, type ContractClause, type SwitchTaskSignal } from './api';
 
 export type ContractChatMessage = {
   id: string;
@@ -22,6 +22,7 @@ export type ContractChatState = {
 export function useContractChat(
   jobId: string | null,
   onClausesUpdate?: (clauses: ContractClause[]) => void,
+  onSwitchTask?: (signal: SwitchTaskSignal) => void,
 ): ContractChatState {
   const [messages, setMessages] = useState<ContractChatMessage[]>([]);
   const [typing, setTyping] = useState(false);
@@ -65,11 +66,6 @@ export function useContractChat(
           setTyping(false);
           setTypingStatus('');
 
-          // حدّث البنود الفعلية
-          if (res.updated_clauses && onClausesUpdate) {
-            onClausesUpdate(res.updated_clauses as ContractClause[]);
-          }
-
           const assistantMsg: ContractChatMessage = {
             id: `cc-a${idRef.current++}`,
             role: 'assistant',
@@ -77,6 +73,17 @@ export function useContractChat(
             changeCard: res.change_card ?? undefined,
           };
           setMessages((m) => [...m, assistantMsg]);
+
+          // 🔀 طلب مهمة مختلفة تمامًا — نسيب الشاشة الأعلى تعمل transition
+          if (res.switch_task) {
+            onSwitchTask?.(res.switch_task);
+            return;
+          }
+
+          // حدّث البنود الفعلية
+          if (res.updated_clauses && onClausesUpdate) {
+            onClausesUpdate(res.updated_clauses as ContractClause[]);
+          }
         })
         .catch((err) => {
           clearStatusTimer();
@@ -90,7 +97,7 @@ export function useContractChat(
           setMessages((m) => [...m, assistantMsg]);
         });
     },
-    [jobId, clearStatusTimer, onClausesUpdate],
+    [jobId, clearStatusTimer, onClausesUpdate, onSwitchTask],
   );
 
   const reset = useCallback(() => {

@@ -6,7 +6,7 @@ import {
 import { cn } from '../lib/cn';
 import { useContractChat, type ContractChatMessage } from '../lib/useContractChat';
 import {
-  type ContractResult, type ContractClause, type ContractChatChangeCard,
+  type ContractResult, type ContractClause, type ContractChatChangeCard, type SwitchTaskSignal,
   downloadContractDocx,
 } from '../lib/api';
 import { Badge } from '../components/ui';
@@ -47,12 +47,14 @@ export function ContractGen({
   initialPrompt,
   embedded = false,
   chatProps,
+  onSwitchTask,
 }: {
   contractData?: ContractResult | null;
   jobId?: string | null;
   initialPrompt?: string;
   embedded?: boolean;
   chatProps?: ChatProps;
+  onSwitchTask?: (signal: SwitchTaskSignal) => void;
 }) {
   // sidebarOpen removed — now using floating chat
   const [copied, setCopied] = useState(false);
@@ -78,7 +80,7 @@ export function ContractGen({
     setLiveClauses(updated);
   }, []);
 
-  const contractChat = useContractChat(jobId ?? null, handleClausesUpdate);
+  const contractChat = useContractChat(jobId ?? null, handleClausesUpdate, onSwitchTask);
   const { context, setContextLabel, clearContext } = contractChat;
 
 

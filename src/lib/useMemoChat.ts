@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
-import { sendMemoChat, type ChatResponse, type ChatChangeCard, type MemoSection } from './api';
+import { sendMemoChat, type ChatResponse, type ChatChangeCard, type MemoSection, type SwitchTaskSignal } from './api';
 
 export type MemoChatMessage = {
   id: string;
@@ -23,6 +23,7 @@ export type MemoChatState = {
 export function useMemoChat(
   jobId: string | null,
   onSectionsUpdate?: (sections: MemoSection[]) => void,
+  onSwitchTask?: (signal: SwitchTaskSignal) => void,
 ): MemoChatState {
   const [messages, setMessages] = useState<MemoChatMessage[]>([]);
   const [typing, setTyping] = useState(false);
@@ -67,11 +68,6 @@ export function useMemoChat(
           setTyping(false);
           setTypingStatus('');
 
-          // ⬆️ حدّث الأقسام الفعلية في المذكرة
-          if (res.updated_sections && onSectionsUpdate) {
-            onSectionsUpdate(res.updated_sections as MemoSection[]);
-          }
-
           const assistantMsg: MemoChatMessage = {
             id: `mc-a${idRef.current++}`,
             role: 'assistant',
@@ -80,6 +76,18 @@ export function useMemoChat(
             warnings: res.warnings?.length ? res.warnings : undefined,
           };
           setMessages((m) => [...m, assistantMsg]);
+
+          // 🔀 المستخدمة طلبت مهمة مختلفة تمامًا (مش تعديل على المذكرة الحالية)
+          // مبنسيبش الرسالة تتنفذ محلياً كتعديل — نسيب الشاشة الأعلى تعمل transition
+          if (res.switch_task) {
+            onSwitchTask?.(res.switch_task);
+            return;
+          }
+
+          // ⬆️ حدّث الأقسام الفعلية في المذكرة
+          if (res.updated_sections && onSectionsUpdate) {
+            onSectionsUpdate(res.updated_sections as MemoSection[]);
+          }
         })
         .catch((err) => {
           clearStatusTimer();
@@ -93,7 +101,7 @@ export function useMemoChat(
           setMessages((m) => [...m, assistantMsg]);
         });
     },
-    [jobId, clearStatusTimer, onSectionsUpdate],
+    [jobId, clearStatusTimer, onSectionsUpdate, onSwitchTask],
   );
 
   const reset = useCallback(() => {

@@ -11,7 +11,7 @@ import { useMemory } from '../lib/memory';
 import { routeMessage } from '../lib/router';
 import { saveSession, type SessionCard } from '../lib/sessionStore';
 import type { ScreenId, TaskType, ChatKind } from '../lib/types';
-import type { MemoResult, ContractResult } from '../lib/api';
+import type { MemoResult, ContractResult, SwitchTaskSignal } from '../lib/api';
 import { cn } from '../lib/cn';
 
 type Phase = 'idle' | 'thinking' | 'artifact';
@@ -253,6 +253,15 @@ export function Workspace() {
     setCurrentSessionId(null);
   }, [chat, memory]);
 
+  /* ── من شات تعديل المذكرة/العقد: الراوتر الموحّد اكتشف إن المستخدمة
+     بتطلب مهمة مختلفة تمامًا (مش تعديل على اللي قدامها) — نبدأ جلسة
+     جديدة تمامًا (مش استكمال للـ session الحالية) ونعمل توليد فعلي
+     للمهمة الجديدة بدل ما نحاول نلخبطها كتعديل ← */
+  const handleChatSwitchTask = useCallback((signal: SwitchTaskSignal) => {
+    handleNewSession();
+    startThinking(signal.intent as TaskKind, signal.enriched_prompt);
+  }, [handleNewSession, startThinking]);
+
   /* ── Expose new chat for shell ── */
   useEffect(() => {
     (window as unknown as Record<string, unknown>).__muhakemNewSession = handleNewSession;
@@ -355,11 +364,11 @@ export function Workspace() {
 
     switch (activeKind) {
       case 'contract':
-        return <ContractGen contractData={contractData} jobId={contractJobId} initialPrompt={initialPrompt} embedded chatProps={sharedProps.chatProps} />;
+        return <ContractGen contractData={contractData} jobId={contractJobId} initialPrompt={initialPrompt} embedded chatProps={sharedProps.chatProps} onSwitchTask={handleChatSwitchTask} />;
       case 'review':
         return <Review initialPrompt={initialPrompt} embedded chatProps={sharedProps.chatProps} />;
       case 'memo':
-        return <Memo initialPrompt={initialPrompt} memoData={memoData} jobId={memoJobId} embedded chatProps={sharedProps.chatProps} />;
+        return <Memo initialPrompt={initialPrompt} memoData={memoData} jobId={memoJobId} embedded chatProps={sharedProps.chatProps} onSwitchTask={handleChatSwitchTask} />;
       case 'research':
       case 'consultation':
         return <Research initialPrompt={initialPrompt} embedded chatProps={sharedProps.chatProps} />;
