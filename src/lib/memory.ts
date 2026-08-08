@@ -116,7 +116,7 @@ export function useMemory() {
 
   const getEnrichedPrompt = useCallback((currentRequest?: string) => {
     return _getEnrichedPrompt(currentRequest);
-  });
+  }, []);
 
   return {
     messages: state.messages,

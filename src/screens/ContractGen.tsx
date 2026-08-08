@@ -28,8 +28,10 @@ function stripEmojis(text: string): string {
 }
 
 /* ── ChatProps shared type (imported by Memo.tsx) ── */
+import type { SessionMessage } from '../components/SessionChat';
+
 export type ChatProps = {
-  messages: { role: string; text: string }[];
+  messages: SessionMessage[];
   typing: boolean;
   typingStatus: string;
   onSend: (text: string) => void;

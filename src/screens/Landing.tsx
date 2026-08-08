@@ -103,9 +103,13 @@ export function Landing({
           onRoute(result.intent, result.enrichedPrompt);
         } else {
           // كمّل الشات — افتح وعرض المحادثة
+          // ⚠️ كان فيه باج هنا: setChatMessages([userMsg]) كانت بتمسح كل
+          // المحادثة المعروضة وتسيب رسالة المستخدم الجديدة بس — يعني أي
+          // رسالة تانية في نفس المحادثة كانت بتمسح كل اللي فات بصريًا
+          // (الذاكرة الفعلية في memory.ts كانت سليمة، بس العرض كان بيتصفر)
           setChatMode(true);
           const userMsg: ChatMsg = { id: `u-${Date.now()}`, role: 'user', text };
-          setChatMessages([userMsg]);
+          setChatMessages((prev) => [...prev, userMsg]);
           addMessage('assistant', result.response);
           setChatMessages((prev) => [
             ...prev,

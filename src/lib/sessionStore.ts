@@ -52,11 +52,11 @@ function _loadSessions(): SessionCard[] {
   if (_sessions !== null) return _sessions;
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    _sessions = raw ? JSON.parse(raw) : [];
+    _sessions = raw ? (JSON.parse(raw) as SessionCard[]) : [];
   } catch {
     _sessions = [];
   }
-  return _sessions;
+  return _sessions ?? [];
 }
 
 function _saveSessions(): void {
