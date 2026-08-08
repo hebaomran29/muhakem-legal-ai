@@ -1,0 +1,755 @@
+diff --git a/backend/.env.example b/backend/.env.example
+new file mode 100644
+index 0000000..cea265d
+--- /dev/null
++++ b/backend/.env.example
+@@ -0,0 +1,17 @@
++# ── موجودين من الأول ──────────────────────────────────────────
++OPENROUTER_KEY=
++QDRANT_URL=
++QDRANT_API_KEY=
++CORS_ORIGINS=*
++
++# ── جديد: الداتابيز (Supabase) ────────────────────────────────
++# من Supabase Dashboard → Project Settings → Database → Connection string (URI)
++# استخدمي الـ "Connection pooling" string (وضع Transaction) لو هتنشري على سيرفر
++# فيه أكتر من instance، أو الـ direct connection وانتي بتجربي محليًا.
++SUPABASE_DB_URL=
++
++# من Supabase Dashboard → Project Settings → API → JWT Settings → JWT Secret
++SUPABASE_JWT_SECRET=
++
++# ملحوظة: لو السطرين دول فاضيين، الموقع هيفضل شغال بالظبط زي الأول
++# (بدون تسجيل دخول، بدون حفظ دائم) — إضافة الداتابيز اختيارية ومتدرّجة.
+diff --git a/backend/auth.py b/backend/auth.py
+new file mode 100644
+index 0000000..08e2821
+--- /dev/null
++++ b/backend/auth.py
+@@ -0,0 +1,81 @@
++"""
++التحقق من هوية المستخدم عن طريق الـ JWT اللي بيرجعه Supabase Auth بعد تسجيل
++الدخول. الفرونت بيبعت الـ token في الهيدر:
++    Authorization: Bearer <access_token>
++
++عندك خيارين لمعرفة الـ firm بتاعت المستخدم:
++  - لو أول مرة يسجل دخول ومعندوش firm، لازم تعملي لها firm جديدة (اونر)
++    أو تضيفيها لـ firm موجودة (invite flow) — ده منطق منفصل هنبنيه
++    في endpoint التسجيل، مش هنا.
++"""
++import os
++import jwt
++from fastapi import Header, HTTPException
++
++from db import repo
++
++SUPABASE_JWT_SECRET = os.environ.get("SUPABASE_JWT_SECRET", "")
++
++
++class CurrentUser:
++    def __init__(self, user_id: str, email: str | None, firm_ids: list[str]):
++        self.user_id = user_id
++        self.email = email
++        self.firm_ids = firm_ids
++
++    @property
++    def firm_id(self) -> str:
++        """الـ firm الافتراضية (أول واحدة). لو محتاجة دعم اختيار firm في
++        الواجهة (مستخدم عضو في أكتر من مكتب)، ده المكان اللي تبدئي منه."""
++        if not self.firm_ids:
++            raise HTTPException(
++                status_code=403,
++                detail="المستخدم مش عضو في أي مكتب — كمّلي إعداد الحساب الأول",
++            )
++        return self.firm_ids[0]
++
++
++def get_current_user(authorization: str = Header(default="")) -> CurrentUser:
++    if not authorization.startswith("Bearer "):
++        raise HTTPException(status_code=401, detail="مفيش توكن مصادقة — سجّلي دخول")
++
++    token = authorization.removeprefix("Bearer ").strip()
++    if not SUPABASE_JWT_SECRET:
++        raise HTTPException(status_code=500, detail="SUPABASE_JWT_SECRET مش مظبوط في السيرفر")
++
++    try:
++        payload = jwt.decode(
++            token, SUPABASE_JWT_SECRET, algorithms=["HS256"],
++            audience="authenticated",
++        )
++    except jwt.PyJWTError as e:
++        raise HTTPException(status_code=401, detail=f"توكن غير صالح أو منتهي: {e}")
++
++    user_id = payload.get("sub")
++    email = payload.get("email")
++    if not user_id:
++        raise HTTPException(status_code=401, detail="توكن غير صالح")
++
++    firm_ids = repo.get_user_firm_ids(user_id)
++    return CurrentUser(user_id=user_id, email=email, firm_ids=firm_ids)
++
++
++def try_get_current_user(authorization: str = Header(default="")) -> "CurrentUser | None":
++    """زي get_current_user بالظبط، لكن بترجع None بدل ما ترمي 401/500 —
++    مستخدمة في الـ endpoints اللي لسه محتاجة تفضل شغالة من غير auth (تدريجيًا،
++    لحد ما تفعّلي تسجيل الدخول في الفرونت). بمجرد ما التسجيل يبقى إجباري،
++    استبدليها بـ get_current_user العادية في الـ Depends."""
++    try:
++        return get_current_user(authorization)
++    except HTTPException:
++        return None
++    except Exception:
++        # الداتابيز نفسها مش متصلة/مظبوطة لسه — نسيب الطلب يكمل من غير auth
++        return None
++
++
++def require_session_access(session_id: str, user: CurrentUser) -> None:
++    """يتأكد إن الجلسة دي فعلاً بتاعة مكتب المستخدم قبل ما نسمحله يقرا/يعدّل
++    فيها — دفاع إضافي حتى لو حد قدر يخمّن session_id بتاع مكتب تاني."""
++    if not repo.session_belongs_to_firm(session_id, user.firm_id):
++        raise HTTPException(status_code=404, detail="الجلسة دي مش موجودة")
+diff --git a/backend/db/__init__.py b/backend/db/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/backend/db/client.py b/backend/db/client.py
+new file mode 100644
+index 0000000..d06957e
+--- /dev/null
++++ b/backend/db/client.py
+@@ -0,0 +1,50 @@
++"""
++اتصال الـ Postgres (Supabase). الباك إند بيستخدم الـ service role connection
++string (متغير SUPABASE_DB_URL) — يعني بيتخطى الـ Row Level Security، والباك
++إند نفسه مسؤول إنه يتحقق من إن المستخدم عضو في المكتب بتاع الجلسة قبل أي
++عملية (شوفي auth.py).
++"""
++import os
++from contextlib import contextmanager
++
++import psycopg2
++import psycopg2.extras
++from psycopg2 import pool as pg_pool
++
++_DB_URL = os.environ.get("SUPABASE_DB_URL", "")
++_pool: pg_pool.SimpleConnectionPool | None = None
++
++
++def _ensure_pool():
++    global _pool
++    if _pool is None:
++        if not _DB_URL:
++            raise RuntimeError(
++                "SUPABASE_DB_URL مش موجود في متغيرات البيئة — "
++                "هتلاقيه في Supabase Dashboard → Project Settings → Database → Connection string (URI)"
++            )
++        _pool = pg_pool.SimpleConnectionPool(1, 10, dsn=_DB_URL)
++
++
++@contextmanager
++def get_conn():
++    _ensure_pool()
++    conn = _pool.getconn()
++    try:
++        yield conn
++        conn.commit()
++    except Exception:
++        conn.rollback()
++        raise
++    finally:
++        _pool.putconn(conn)
++
++
++@contextmanager
++def get_cursor():
++    with get_conn() as conn:
++        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
++        try:
++            yield cur
++        finally:
++            cur.close()
+diff --git a/backend/db/repo.py b/backend/db/repo.py
+new file mode 100644
+index 0000000..4f4eb0f
+--- /dev/null
++++ b/backend/db/repo.py
+@@ -0,0 +1,163 @@
++"""
++كل عمليات القراءة/الكتابة على الجلسات والنتائج والشات. الدوال هنا بتفترض
++إنك اتأكدتي بالفعل (في auth.py) إن المستخدم عضو في الـ firm_id المُمرَّر —
++مفيش تحقق صلاحيات هنا، ده مقصود، عشان الطبقة دي تفضل بسيطة.
++"""
++import json
++from .client import get_cursor
++
++
++# ── Sessions ─────────────────────────────────────────────────────
++
++def create_session(firm_id: str, created_by: str, session_type: str,
++                    title: str, prompt: str | None = None) -> dict:
++    with get_cursor() as cur:
++        cur.execute(
++            """insert into sessions (firm_id, created_by, type, title, prompt)
++               values (%s, %s, %s, %s, %s) returning *""",
++            (firm_id, created_by, session_type, title, prompt),
++        )
++        return cur.fetchone()
++
++
++def touch_session(session_id: str, title: str | None = None) -> None:
++    """تحديث updated_at (وكمان العنوان لو اتغيّر) — بتستخدم كل ما جلسة تتحدّث."""
++    with get_cursor() as cur:
++        if title is not None:
++            cur.execute(
++                "update sessions set updated_at = now(), title = %s where id = %s",
++                (title, session_id),
++            )
++        else:
++            cur.execute("update sessions set updated_at = now() where id = %s", (session_id,))
++
++
++def list_sessions(firm_id: str) -> list[dict]:
++    with get_cursor() as cur:
++        cur.execute(
++            """select * from sessions where firm_id = %s
++               order by pinned desc, updated_at desc""",
++            (firm_id,),
++        )
++        return cur.fetchall()
++
++
++def get_session(session_id: str) -> dict | None:
++    with get_cursor() as cur:
++        cur.execute("select * from sessions where id = %s", (session_id,))
++        return cur.fetchone()
++
++
++def session_belongs_to_firm(session_id: str, firm_id: str) -> bool:
++    with get_cursor() as cur:
++        cur.execute(
++            "select 1 from sessions where id = %s and firm_id = %s",
++            (session_id, firm_id),
++        )
++        return cur.fetchone() is not None
++
++
++def delete_session(session_id: str) -> None:
++    with get_cursor() as cur:
++        cur.execute("delete from sessions where id = %s", (session_id,))
++
++
++def set_pinned(session_id: str, pinned: bool) -> None:
++    with get_cursor() as cur:
++        cur.execute("update sessions set pinned = %s where id = %s", (pinned, session_id))
++
++
++# ── Memo results ─────────────────────────────────────────────────
++
++def save_memo_result(session_id: str, sections: list, case_metadata: dict | None,
++                      sources: dict | None, memo_text: str | None) -> None:
++    with get_cursor() as cur:
++        cur.execute(
++            """insert into memo_results (session_id, sections, case_metadata, sources, memo_text)
++               values (%s, %s, %s, %s, %s)
++               on conflict (session_id) do update set
++                 sections = excluded.sections,
++                 case_metadata = excluded.case_metadata,
++                 sources = excluded.sources,
++                 memo_text = excluded.memo_text,
++                 updated_at = now()""",
++            (session_id, json.dumps(sections), json.dumps(case_metadata),
++             json.dumps(sources), memo_text),
++        )
++
++
++def get_memo_result(session_id: str) -> dict | None:
++    with get_cursor() as cur:
++        cur.execute("select * from memo_results where session_id = %s", (session_id,))
++        return cur.fetchone()
++
++
++# ── Contract results ─────────────────────────────────────────────
++
++def save_contract_result(session_id: str, clauses: list, contract_type_ar: str | None) -> None:
++    with get_cursor() as cur:
++        cur.execute(
++            """insert into contract_results (session_id, clauses, contract_type_ar)
++               values (%s, %s, %s)
++               on conflict (session_id) do update set
++                 clauses = excluded.clauses,
++                 contract_type_ar = excluded.contract_type_ar,
++                 updated_at = now()""",
++            (session_id, json.dumps(clauses), contract_type_ar),
++        )
++
++
++def get_contract_result(session_id: str) -> dict | None:
++    with get_cursor() as cur:
++        cur.execute("select * from contract_results where session_id = %s", (session_id,))
++        return cur.fetchone()
++
++
++# ── Chat history ─────────────────────────────────────────────────
++
++def append_chat_message(session_id: str, role: str, text: str,
++                         change_card: dict | None = None) -> dict:
++    with get_cursor() as cur:
++        cur.execute(
++            """insert into chat_messages (session_id, role, text, change_card)
++               values (%s, %s, %s, %s) returning *""",
++            (session_id, role, text, json.dumps(change_card) if change_card else None),
++        )
++        return cur.fetchone()
++
++
++def get_chat_history(session_id: str) -> list[dict]:
++    with get_cursor() as cur:
++        cur.execute(
++            "select * from chat_messages where session_id = %s order by created_at",
++            (session_id,),
++        )
++        return cur.fetchall()
++
++
++# ── Firms / membership ───────────────────────────────────────────
++
++def get_user_firm_ids(user_id: str) -> list[str]:
++    with get_cursor() as cur:
++        cur.execute("select firm_id from firm_members where user_id = %s", (user_id,))
++        return [row["firm_id"] for row in cur.fetchall()]
++
++
++def create_firm_with_owner(name: str, owner_user_id: str) -> dict:
++    with get_cursor() as cur:
++        cur.execute("insert into firms (name) values (%s) returning *", (name,))
++        firm = cur.fetchone()
++        cur.execute(
++            "insert into firm_members (firm_id, user_id, role) values (%s, %s, 'owner')",
++            (firm["id"], owner_user_id),
++        )
++        return firm
++
++
++def add_member_to_firm(firm_id: str, user_id: str, role: str = "member") -> None:
++    with get_cursor() as cur:
++        cur.execute(
++            """insert into firm_members (firm_id, user_id, role) values (%s, %s, %s)
++               on conflict (firm_id, user_id) do nothing""",
++            (firm_id, user_id, role),
++        )
+diff --git a/backend/db/schema.sql b/backend/db/schema.sql
+new file mode 100644
+index 0000000..c3da94c
+--- /dev/null
++++ b/backend/db/schema.sql
+@@ -0,0 +1,120 @@
++-- ═══════════════════════════════════════════════════════════════
++-- مُحَكِّم — Database Schema (Supabase / Postgres)
++-- شغّليه في: Supabase Dashboard → SQL Editor → New query → Run
++-- ═══════════════════════════════════════════════════════════════
++
++-- ── المكاتب/الفرق ──────────────────────────────────────────────
++create table if not exists firms (
++  id          uuid primary key default gen_random_uuid(),
++  name        text not null,
++  created_at  timestamptz not null default now()
++);
++
++-- ── أعضاء المكتب (ربط auth.users بالمكتب) ─────────────────────
++create table if not exists firm_members (
++  firm_id     uuid not null references firms(id) on delete cascade,
++  user_id     uuid not null references auth.users(id) on delete cascade,
++  role        text not null default 'member' check (role in ('owner', 'member')),
++  joined_at   timestamptz not null default now(),
++  primary key (firm_id, user_id)
++);
++
++-- ── الجلسات (مذكرة / عقد / مراجعة / بحث / استشارة) ────────────
++create table if not exists sessions (
++  id          uuid primary key default gen_random_uuid(),
++  firm_id     uuid not null references firms(id) on delete cascade,
++  created_by  uuid not null references auth.users(id),
++  type        text not null check (type in ('memo', 'contract', 'review', 'research', 'consultation')),
++  title       text not null default '',
++  prompt      text,               -- الطلب الأصلي اللي بدأت بيه الجلسة
++  pinned      boolean not null default false,
++  created_at  timestamptz not null default now(),
++  updated_at  timestamptz not null default now()
++);
++
++create index if not exists idx_sessions_firm on sessions(firm_id, updated_at desc);
++
++-- ── نتيجة المذكرة (Sections + المصادر اللي استخدمها الـ RAG) ──
++create table if not exists memo_results (
++  session_id      uuid primary key references sessions(id) on delete cascade,
++  sections        jsonb not null,        -- نفس شكل MemoSection[] بتاع الفرونت
++  case_metadata   jsonb,
++  sources         jsonb,                 -- الطعون + مواد القانون اللي اتجابت بالـ RAG (عشان شات الأسئلة)
++  memo_text       text,                  -- النص الكامل المُصدَّر (لتصدير Word)
++  updated_at      timestamptz not null default now()
++);
++
++-- ── نتيجة العقد (البنود) ───────────────────────────────────────
++create table if not exists contract_results (
++  session_id       uuid primary key references sessions(id) on delete cascade,
++  clauses          jsonb not null,       -- نفس شكل ContractClause[] بتاع الفرونت
++  contract_type_ar text,
++  updated_at       timestamptz not null default now()
++);
++
++-- ── سجل شات التعديل لكل جلسة ───────────────────────────────────
++create table if not exists chat_messages (
++  id           uuid primary key default gen_random_uuid(),
++  session_id   uuid not null references sessions(id) on delete cascade,
++  role         text not null check (role in ('user', 'assistant')),
++  text         text not null,
++  change_card  jsonb,
++  created_at   timestamptz not null default now()
++);
++
++create index if not exists idx_chat_session on chat_messages(session_id, created_at);
++
++-- ═══════════════════════════════════════════════════════════════
++-- Row Level Security — كل مستخدم يشوف بس بيانات المكتب بتاعه
++-- (طبقة حماية إضافية؛ الباك إند بيستخدم service role فبيتخطاها،
++--  لكن مهمة لو أي حد هيوصل للـ DB مباشرة من الفرونت مستقبلاً)
++-- ═══════════════════════════════════════════════════════════════
++
++alter table firms enable row level security;
++alter table firm_members enable row level security;
++alter table sessions enable row level security;
++alter table memo_results enable row level security;
++alter table contract_results enable row level security;
++alter table chat_messages enable row level security;
++
++create policy "members can view their firm" on firms
++  for select using (
++    id in (select firm_id from firm_members where user_id = auth.uid())
++  );
++
++create policy "members can view their firm's membership" on firm_members
++  for select using (
++    firm_id in (select firm_id from firm_members where user_id = auth.uid())
++  );
++
++create policy "members can access their firm's sessions" on sessions
++  for all using (
++    firm_id in (select firm_id from firm_members where user_id = auth.uid())
++  );
++
++create policy "members can access their firm's memo results" on memo_results
++  for all using (
++    session_id in (
++      select id from sessions where firm_id in (
++        select firm_id from firm_members where user_id = auth.uid()
++      )
++    )
++  );
++
++create policy "members can access their firm's contract results" on contract_results
++  for all using (
++    session_id in (
++      select id from sessions where firm_id in (
++        select firm_id from firm_members where user_id = auth.uid()
++      )
++    )
++  );
++
++create policy "members can access their firm's chat messages" on chat_messages
++  for all using (
++    session_id in (
++      select id from sessions where firm_id in (
++        select firm_id from firm_members where user_id = auth.uid()
++      )
++    )
++  );
+diff --git a/backend/main.py b/backend/main.py
+index 1a8c9f6..6af75c2 100644
+--- a/backend/main.py
++++ b/backend/main.py
+@@ -29,12 +29,15 @@ from datetime import datetime, timezone
+ from contextlib import redirect_stdout
+ from typing import Optional
+ 
+-from fastapi import FastAPI, HTTPException
++from fastapi import FastAPI, HTTPException, Depends, Header
+ from fastapi.middleware.cors import CORSMiddleware
+ from fastapi.responses import FileResponse
+ from pydantic import BaseModel
+ 
+ import pipeline  # نفس ملف الـ pipeline من غير أي تعديل منطقي
++from db import repo
++from db.client import get_cursor as repo_client_cursor
++from auth import CurrentUser, get_current_user, try_get_current_user, require_session_access
+ 
+ # ── استيراد pipeline العقود ──────────────────────────────────────────────────
+ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "contracts"))
+@@ -270,6 +273,19 @@ def _run_job(job_id: str):
+                 "case_facts": case_facts,
+                 "sources": result.get("sources", {}),
+             }
++
++        # ── حفظ دائم في الداتابيز (best-effort — لو فشل، الجلسة الحالية
++        #    فضلت شغالة عادي زي الأول، بس مش هتلاقيها لو رجعتي تاني) ──
++        db_session_id = job.get("db_session_id")
++        if db_session_id:
++            try:
++                repo.save_memo_result(
++                    db_session_id, sections, case_metadata,
++                    result.get("sources", {}), final_memo,
++                )
++                repo.touch_session(db_session_id)
++            except Exception as e:
++                print(f"⚠️ فشل حفظ نتيجة المذكرة في الداتابيز: {e}")
+     except Exception as e:
+         with _jobs_lock:
+             job["status"] = JobStatus.FAILED
+@@ -680,6 +696,7 @@ class GenerateMemoRequest(BaseModel):
+ class JobResponse(BaseModel):
+     job_id: str
+     status: str
++    db_session_id: Optional[str] = None
+ 
+ 
+ class JobStatusResponse(BaseModel):
+@@ -711,13 +728,28 @@ def health():
+ 
+ 
+ @app.post("/api/memo/generate", response_model=JobResponse)
+-def generate_memo(payload: GenerateMemoRequest):
++def generate_memo(payload: GenerateMemoRequest, user: "CurrentUser | None" = Depends(try_get_current_user)):
+     """بيبدأ job (استرجاع → توليد → تحقق → تصحيح، من دقيقة لـ3 دقايق) ويرجع
+     job_id على طول. اعملي polling على GET /api/memo/{job_id} لحد ما status
+-    يبقى completed — ده اللي بيغذي شاشة اللودينج."""
++    يبقى completed — ده اللي بيغذي شاشة اللودينج.
++
++    لو المستخدم مسجّل دخول (user مش None) وفيه داتابيز متوصّلة، بتتعمل
++    session دائمة في الـ DB من الأول، والنتيجة بتتحفظ فيها لما التوليد يخلص
++    (شوفي _run_job) — يعني تقدري ترجعي للمذكرة دي بعدين من أي جهاز."""
+     if not payload.raw_text or not payload.raw_text.strip():
+         raise HTTPException(status_code=400, detail="raw_text فاضي")
+ 
++    db_session_id = None
++    if user:
++        try:
++            session_row = repo.create_session(
++                user.firm_id, user.user_id, "memo",
++                title=payload.raw_text.strip()[:60], prompt=payload.raw_text,
++            )
++            db_session_id = str(session_row["id"])
++        except Exception as e:
++            print(f"⚠️ فشل حفظ الجلسة في الداتابيز (هتكمل من غير حفظ دائم): {e}")
++
+     job_id = str(uuid.uuid4())
+     with _jobs_lock:
+         _jobs[job_id] = {
+@@ -731,9 +763,10 @@ def generate_memo(payload: GenerateMemoRequest):
+             "error": None,
+             "chat_history": [],
+             "created_at": datetime.now(timezone.utc).isoformat(),
++            "db_session_id": db_session_id,
+         }
+     _work_queue.put(job_id)
+-    return JobResponse(job_id=job_id, status=JobStatus.QUEUED)
++    return JobResponse(job_id=job_id, status=JobStatus.QUEUED, db_session_id=db_session_id)
+ 
+ 
+ @app.get("/api/memo/{job_id}", response_model=JobStatusResponse)
+@@ -803,6 +836,23 @@ def chat_edit(payload: ChatEditRequest):
+         job["chat_history"].append({"role": "user", "message": payload.message})
+         job["chat_history"].append({"role": "assistant", "message": response["reply"]})
+ 
++    db_session_id = job.get("db_session_id")
++    if db_session_id:
++        try:
++            repo.append_chat_message(db_session_id, "user", payload.message)
++            repo.append_chat_message(db_session_id, "assistant", response["reply"],
++                                      change_card=response.get("change_card"))
++            # لو التعديل فعلاً غيّر الأقسام، خزّني النسخة المحدّثة كمان
++            if response.get("updated_sections") is not None:
++                result = job["result"]
++                repo.save_memo_result(
++                    db_session_id, result["sections"], result["case_metadata"],
++                    result.get("sources", {}), result["memo"],
++                )
++            repo.touch_session(db_session_id)
++        except Exception as e:
++            print(f"⚠️ فشل حفظ رسائل الشات في الداتابيز: {e}")
++
+     return response
+ 
+ 
+@@ -935,6 +985,16 @@ def _run_contract_job(job_id: str):
+                 "clause_validation": result.get("clause_validation", {}),
+                 "docx_path": result.get("docx_path"),
+             }
++
++        db_session_id = job.get("db_session_id")
++        if db_session_id:
++            try:
++                repo.save_contract_result(
++                    db_session_id, clauses, job["result"]["contract_type_ar"],
++                )
++                repo.touch_session(db_session_id)
++            except Exception as e:
++                print(f"⚠️ فشل حفظ نتيجة العقد في الداتابيز: {e}")
+     except Exception as e:
+         with _contract_jobs_lock:
+             job["status"] = JobStatus.FAILED
+@@ -1146,11 +1206,22 @@ class ContractChatEditRequest(BaseModel):
+ # ── Contract Endpoints ──────────────────────────────────────────────────────
+ 
+ @app.post("/api/contract/generate", response_model=JobResponse)
+-def generate_contract_endpoint(payload: GenerateContractRequest):
++def generate_contract_endpoint(payload: GenerateContractRequest, user: "CurrentUser | None" = Depends(try_get_current_user)):
+     """يبدأ توليد عقد ويرجع job_id — الفرونت يعمل polling."""
+     if not payload.query or not payload.query.strip():
+         raise HTTPException(status_code=400, detail="query فاضي")
+ 
++    db_session_id = None
++    if user:
++        try:
++            session_row = repo.create_session(
++                user.firm_id, user.user_id, "contract",
++                title=payload.query.strip()[:60], prompt=payload.query,
++            )
++            db_session_id = str(session_row["id"])
++        except Exception as e:
++            print(f"⚠️ فشل حفظ الجلسة في الداتابيز (هتكمل من غير حفظ دائم): {e}")
++
+     job_id = str(uuid.uuid4())
+     with _contract_jobs_lock:
+         _contract_jobs[job_id] = {
+@@ -1164,9 +1235,10 @@ def generate_contract_endpoint(payload: GenerateContractRequest):
+             "error": None,
+             "chat_history": [],
+             "created_at": datetime.now(timezone.utc).isoformat(),
++            "db_session_id": db_session_id,
+         }
+     _contract_work_queue.put(job_id)
+-    return JobResponse(job_id=job_id, status=JobStatus.QUEUED)
++    return JobResponse(job_id=job_id, status=JobStatus.QUEUED, db_session_id=db_session_id)
+ 
+ 
+ @app.get("/api/contract/{job_id}", response_model=JobStatusResponse)
+@@ -1206,6 +1278,19 @@ def contract_chat_edit(payload: ContractChatEditRequest):
+         job["chat_history"].append({"role": "user", "message": payload.message})
+         job["chat_history"].append({"role": "assistant", "message": response["reply"]})
+ 
++    db_session_id = job.get("db_session_id")
++    if db_session_id:
++        try:
++            repo.append_chat_message(db_session_id, "user", payload.message)
++            repo.append_chat_message(db_session_id, "assistant", response["reply"],
++                                      change_card=response.get("change_card"))
++            if response.get("updated_clauses") is not None:
++                result = job["result"]
++                repo.save_contract_result(db_session_id, result["clauses"], result.get("contract_type_ar"))
++            repo.touch_session(db_session_id)
++        except Exception as e:
++            print(f"⚠️ فشل حفظ رسائل شات العقد في الداتابيز: {e}")
++
+     return response
+ 
+ 
+@@ -1244,3 +1329,87 @@ def download_contract_docx(job_id: str):
+         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+         filename=filename,
+     )
++
++
++# ═══════════════════════════════════════════════════════════════════════════
++# ── Firms & Sessions (الداتابيز الدائمة) ────────────────────────────────
++# مطلوب Authorization: Bearer <supabase_access_token> على كل الـ endpoints دي
++# ═══════════════════════════════════════════════════════════════════════════
++
++class CreateFirmRequest(BaseModel):
++    name: str
++
++
++@app.post("/api/firms")
++def create_firm(payload: CreateFirmRequest, user: CurrentUser = Depends(get_current_user)):
++    """أول مرة يسجّل فيها المستخدم دخول ومعندوش مكتب — بينشئله مكتب جديد
++    وهو الـ owner بتاعه. لو عنده مكتب بالفعل، استخدمي /api/firms/invite
++    بدل ما تعملي واحد جديد."""
++    if user.firm_ids:
++        raise HTTPException(status_code=409, detail="المستخدم عضو في مكتب بالفعل")
++    firm = repo.create_firm_with_owner(payload.name.strip() or "مكتبي", user.user_id)
++    return firm
++
++
++class InviteMemberRequest(BaseModel):
++    email: str
++
++
++@app.post("/api/firms/invite")
++def invite_member(payload: InviteMemberRequest, user: CurrentUser = Depends(get_current_user)):
++    """بتضيف محامية تانية (لازم تكون عملت حساب على Supabase Auth بالفعل
++    بنفس الإيميل ده) لنفس مكتب المستخدم الحالي."""
++    with repo_client_cursor() as cur:
++        cur.execute("select id from auth.users where email = %s", (payload.email.strip().lower(),))
++        row = cur.fetchone()
++    if not row:
++        raise HTTPException(status_code=404, detail="مفيش حساب مسجّل بالإيميل ده")
++    repo.add_member_to_firm(user.firm_id, str(row["id"]))
++    return {"success": True}
++
++
++@app.get("/api/sessions")
++def list_sessions_endpoint(user: CurrentUser = Depends(get_current_user)):
++    """كل جلسات مكتب المستخدم (مذكرات وعقود واستشارات...) — بتغذي الـ Sidebar
++    بدل localStorage."""
++    return {"sessions": repo.list_sessions(user.firm_id)}
++
++
++@app.get("/api/sessions/{session_id}")
++def get_session_endpoint(session_id: str, user: CurrentUser = Depends(get_current_user)):
++    """تفاصيل جلسة واحدة كاملة: بياناتها + النتيجة (مذكرة أو عقد) + كل
++    تاريخ الشات — عشان تقدري تفتحيها وتكمّلي التعديل عليها بالشات."""
++    require_session_access(session_id, user)
++    session = repo.get_session(session_id)
++    if session is None:
++        raise HTTPException(status_code=404, detail="الجلسة دي مش موجودة")
++
++    result = None
++    if session["type"] == "memo":
++        result = repo.get_memo_result(session_id)
++    elif session["type"] == "contract":
++        result = repo.get_contract_result(session_id)
++
++    return {
++        "session": session,
++        "result": result,
++        "chat_history": repo.get_chat_history(session_id),
++    }
++
++
++@app.delete("/api/sessions/{session_id}")
++def delete_session_endpoint(session_id: str, user: CurrentUser = Depends(get_current_user)):
++    require_session_access(session_id, user)
++    repo.delete_session(session_id)
++    return {"success": True}
++
++
++class PinSessionRequest(BaseModel):
++    pinned: bool
++
++
++@app.post("/api/sessions/{session_id}/pin")
++def pin_session_endpoint(session_id: str, payload: PinSessionRequest, user: CurrentUser = Depends(get_current_user)):
++    require_session_access(session_id, user)
++    repo.set_pinned(session_id, payload.pinned)
++    return {"success": True}
+diff --git a/backend/requirements.txt b/backend/requirements.txt
+index d04c44c..1aa8c54 100644
+--- a/backend/requirements.txt
++++ b/backend/requirements.txt
+@@ -9,4 +9,6 @@ sentence-transformers==3.3.1
+ numpy==2.2.1
+ python-dotenv==1.0.1
+ pypdf
+-python-docx
+\ No newline at end of file
++python-docx
++psycopg2-binary==2.9.10
++PyJWT==2.10.1
+\ No newline at end of file

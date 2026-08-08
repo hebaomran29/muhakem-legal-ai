@@ -4,11 +4,26 @@ import { Workspace } from './components/Workspace';
 import { History } from './screens/History';
 import { Report } from './screens/Report';
 import { ContractDoc } from './screens/ContractDoc';
+import { Login } from './screens/Login';
+import { useAuth } from './lib/auth';
 import type { ScreenId } from './lib/types';
 import type { SessionCard } from './lib/sessionStore';
 
 export default function App() {
+  const { loading, user, needsFirm, signOut } = useAuth();
   const [overlayScreen, setOverlayScreen] = useState<ScreenId | null>(null);
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center text-neutral-400">
+        ...جاري التحميل
+      </div>
+    );
+  }
+
+  if (!user || needsFirm) {
+    return <Login />;
+  }
 
   useEffect(() => {
     const onNavigate = (e: Event) => {
@@ -67,6 +82,7 @@ export default function App() {
   if (overlayScreen === 'history') {
     return (
       <WorkspaceShell current="history" onNavigate={handleNavigate} onNewChat={handleNewChat} onOpenSession={handleOpenSession}>
+        <SignOutButton onSignOut={signOut} />
         <History onNavigate={(s) => { if (s === 'landing') setOverlayScreen(null); }} />
       </WorkspaceShell>
     );
@@ -74,7 +90,22 @@ export default function App() {
 
   return (
     <WorkspaceShell current={currentScreen} onNavigate={handleNavigate} onNewChat={handleNewChat} onOpenSession={handleOpenSession}>
+        <SignOutButton onSignOut={signOut} />
         <Workspace />
       </WorkspaceShell>
+  );
+}
+
+/* زرار تسجيل خروج بسيط — مكانه مؤقت (ركن الشاشة) لحد ما يتضاف مكان أنسب
+   في تصميم الـ header بتاع WorkspaceShell. */
+function SignOutButton({ onSignOut }: { onSignOut: () => Promise<void> }) {
+  return (
+    <button
+      onClick={() => onSignOut()}
+      className="fixed bottom-3 left-3 z-50 text-xs text-neutral-400 hover:text-neutral-700 bg-white/80 backdrop-blur px-2 py-1 rounded-md border border-neutral-200"
+      dir="rtl"
+    >
+      تسجيل خروج
+    </button>
   );
 }

@@ -6,6 +6,8 @@
    working before the backend is connected.
    ───────────────────────────────────────────────────────────── */
 
+import { getAccessToken } from './auth';
+
 const BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '') || '';
 
 /* ════════════════════════════════════════════════
@@ -78,9 +80,14 @@ export type ChatResponse = {
    ════════════════════════════════════════════════ */
 
 async function http<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = getAccessToken();
   const res = await fetch(`${BASE_URL}${path}`, {
-    headers: { 'Content-Type': 'application/json' },
     ...init,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(init?.headers ?? {}),
+    },
   });
   if (!res.ok) {
     let detail = '';
@@ -416,5 +423,55 @@ function mockSendMemoChat(_jobId: string, message: string): Promise<ChatResponse
     change_card: null,
     warnings: [],
     switch_task: null,
+  });
+}
+
+/* ════════════════════════════════════════════════
+   Remote Sessions (الداتابيز — Supabase)
+   بتشتغل بس للمستخدم المسجّل دخول (getAccessToken() موجود).
+   ════════════════════════════════════════════════ */
+
+export type RemoteSession = {
+  id: string;
+  firm_id: string;
+  created_by: string;
+  type: 'memo' | 'contract' | 'review' | 'research' | 'consultation';
+  title: string;
+  prompt: string | null;
+  pinned: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type RemoteChatMessage = {
+  id: string;
+  session_id: string;
+  role: 'user' | 'assistant';
+  text: string;
+  change_card: unknown;
+  created_at: string;
+};
+
+export async function listRemoteSessions(): Promise<RemoteSession[]> {
+  const res = await http<{ sessions: RemoteSession[] }>('/api/sessions');
+  return res.sessions;
+}
+
+export async function getRemoteSession(id: string): Promise<{
+  session: RemoteSession;
+  result: Record<string, unknown> | null;
+  chat_history: RemoteChatMessage[];
+}> {
+  return http(`/api/sessions/${id}`);
+}
+
+export async function deleteRemoteSession(id: string): Promise<void> {
+  await http(`/api/sessions/${id}`, { method: 'DELETE' });
+}
+
+export async function pinRemoteSession(id: string, pinned: boolean): Promise<void> {
+  await http(`/api/sessions/${id}/pin`, {
+    method: 'POST',
+    body: JSON.stringify({ pinned }),
   });
 }

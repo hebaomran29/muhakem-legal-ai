@@ -6,19 +6,40 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
+node_modules
+dist
+dist-ssr
+*.local
+
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+.env
+.env.local
+.env.*.local
 
 # Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
 venv/
 .venv/
-__pycache__/
-*.pyc
 
-# Environment variables
-.env
+# Bolt
+.bolt/
 
-# Node
-node_modules/
+# Agent worklog
+worklog.md
 
-# IDE
-.vscode/
-.idea/
+# OS
+Thumbs.db

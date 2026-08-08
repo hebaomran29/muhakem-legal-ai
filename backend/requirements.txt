@@ -10,3 +10,5 @@ numpy==2.2.1
 python-dotenv==1.0.1
 pypdf
 python-docx
+psycopg2-binary==2.9.10
+PyJWT==2.10.1

@@ -12,6 +12,8 @@ import { routeMessage } from '../lib/router';
 import { saveSession, type SessionCard } from '../lib/sessionStore';
 import type { ScreenId, TaskType, ChatKind } from '../lib/types';
 import type { MemoResult, ContractResult, SwitchTaskSignal } from '../lib/api';
+import { getRemoteSession } from '../lib/api';
+import { getAccessToken } from '../lib/auth';
 import { cn } from '../lib/cn';
 
 type Phase = 'idle' | 'thinking' | 'artifact';
@@ -276,7 +278,7 @@ export function Workspace() {
   }, []);
 
   /* ── Open an existing session from sidebar/history ── */
-  const handleOpenSession = useCallback((session: SessionCard) => {
+  const handleOpenSession = useCallback(async (session: SessionCard) => {
     const kindMap: Partial<Record<string, ArtifactType>> = {
       'contract-gen': 'contract',
       review: 'review',
@@ -306,6 +308,51 @@ export function Workspace() {
       setPhase('artifact');
       setArtifactKey((k) => k + 1);
       return;
+    }
+
+    // جلسة من الداتابيز (مسجّلة دخول) مالهاش data محفوظة محليًا — نجيبها
+    // من /api/sessions/{id} بدل ما نعمل regenerate كامل من الصفر
+    if (getAccessToken() && (kind === 'memo' || kind === 'contract')) {
+      try {
+        const { result } = await getRemoteSession(session.id);
+        if (result) {
+          chat.reset();
+          memory.clear();
+          setCurrentSessionId(session.id);
+          setInitialPrompt(session.prompt);
+
+          if (kind === 'memo') {
+            const memoResult: MemoResult = {
+              sections: (result.sections as MemoResult['sections']) ?? [],
+              case_metadata: (result.case_metadata as MemoResult['case_metadata']) ?? ({} as MemoResult['case_metadata']),
+              memo: (result.memo_text as string) ?? '',
+            };
+            setMemoData(memoResult);
+            setMemoJobId(null); // مفيش job نشط لسه لحد ما تتكلمي في الشات
+          } else {
+            const clauses = (result.clauses as ContractResult['clauses']) ?? [];
+            const contractResult: ContractResult = {
+              contract_text: clauses.map((c) => c.body ?? '').join('\n\n'),
+              preamble: '',
+              closing: '',
+              clauses,
+              contract_type_key: null,
+              contract_type_ar: (result.contract_type_ar as string) ?? '',
+              clause_validation: null,
+              docx_path: null,
+            };
+            setContractData(contractResult);
+            setContractJobId(null);
+          }
+
+          setActiveKind(kind);
+          setPhase('artifact');
+          setArtifactKey((k) => k + 1);
+          return;
+        }
+      } catch (e) {
+        console.warn('فشل جلب الجلسة من الداتابيز، هنعمل regenerate بدلاً منها:', e);
+      }
     }
 
     // fallback لجلسات قديمة اتحفظت قبل هذا الإصلاح ومفيهاش data محفوظة —

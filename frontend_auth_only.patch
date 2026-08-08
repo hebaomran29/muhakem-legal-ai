@@ -1,0 +1,838 @@
+diff --git a/.env.example b/.env.example
+new file mode 100644
+index 0000000..1a09307
+--- /dev/null
++++ b/.env.example
+@@ -0,0 +1,9 @@
++# عنوان الباك إند (FastAPI) — لو فاضي، الموقع بيشتغل بـ mock بيانات
++VITE_API_BASE_URL=http://localhost:8000
++
++# من Supabase Dashboard → Project Settings → API → Project URL
++VITE_SUPABASE_URL=
++
++# من نفس الصفحة → API Keys → Publishable key (آمن يتحط في الفرونت،
++# مش سري زي service key أو JWT secret)
++VITE_SUPABASE_ANON_KEY=
+diff --git a/package-lock.json b/package-lock.json
+index 8977e99..9305b7c 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -8,6 +8,7 @@
+       "name": "muhakem",
+       "version": "0.0.1",
+       "dependencies": {
++        "@supabase/supabase-js": "^2.112.2",
+         "clsx": "^2.1.1",
+         "lucide-react": "^0.408.0",
+         "react": "^18.3.1",
+@@ -1155,6 +1156,98 @@
+         "win32"
+       ]
+     },
++    "node_modules/@supabase/auth-js": {
++      "version": "2.112.2",
++      "resolved": "https://registry.npmjs.org/@supabase/auth-js/-/auth-js-2.112.2.tgz",
++      "integrity": "sha512-l1InCp4j98d09LZ6+RgubgF4eVPGBGXcLEhFusLg1qUCHJ2IEkYu5FohKK+eaFmIOwEk0kqG/j/lycw5e15mcQ==",
++      "license": "MIT",
++      "dependencies": {
++        "tslib": "2.8.1"
++      },
++      "engines": {
++        "node": ">=22.0.0"
++      }
++    },
++    "node_modules/@supabase/functions-js": {
++      "version": "2.112.2",
++      "resolved": "https://registry.npmjs.org/@supabase/functions-js/-/functions-js-2.112.2.tgz",
++      "integrity": "sha512-oMuSWN0ERmrG9S6kOM0bwhHmESGVl3kMtkZl2dNCU/r89hMiziX4GfD1omNo9QcBDele4N0GwSZ7hdbpuiA35A==",
++      "license": "MIT",
++      "dependencies": {
++        "tslib": "2.8.1"
++      },
++      "engines": {
++        "node": ">=22.0.0"
++      }
++    },
++    "node_modules/@supabase/phoenix": {
++      "version": "0.4.5",
++      "resolved": "https://registry.npmjs.org/@supabase/phoenix/-/phoenix-0.4.5.tgz",
++      "integrity": "sha512-aAn9H9ovVyeApKy11OWOrrOGq8DV68yWeH4ud2lN9fzn4aO8Zb5GLL9m1pUg9nLqIcT+ZDfAcsZe0E/nqdv2lw==",
++      "license": "MIT"
++    },
++    "node_modules/@supabase/postgrest-js": {
++      "version": "2.112.2",
++      "resolved": "https://registry.npmjs.org/@supabase/postgrest-js/-/postgrest-js-2.112.2.tgz",
++      "integrity": "sha512-ewhhtRny/HFRGhUTTg/PsqIatsl8OhW8Eha/Tz4S+SRAXBnuhKei9ZpsQTgL/3XcH9UEwuPQyQgQ9itq7nRQeg==",
++      "license": "MIT",
++      "dependencies": {
++        "tslib": "2.8.1"
++      },
++      "engines": {
++        "node": ">=22.0.0"
++      }
++    },
++    "node_modules/@supabase/realtime-js": {
++      "version": "2.112.2",
++      "resolved": "https://registry.npmjs.org/@supabase/realtime-js/-/realtime-js-2.112.2.tgz",
++      "integrity": "sha512-cd9/CEUJ6Go13FxtfiuC5rYELJtuQzVzTXlGG+XjSppjDS+anq+xo++WQe7ZRUNTuHOCeyKRwmx9Hw/OQJ04ig==",
++      "license": "MIT",
++      "dependencies": {
++        "@supabase/phoenix": "0.4.5",
++        "tslib": "2.8.1"
++      },
++      "engines": {
++        "node": ">=22.0.0"
++      }
++    },
++    "node_modules/@supabase/storage-js": {
++      "version": "2.112.2",
++      "resolved": "https://registry.npmjs.org/@supabase/storage-js/-/storage-js-2.112.2.tgz",
++      "integrity": "sha512-6jyBq/J1iXOHNpbjCZS7gFcDk49iM1MCJUVkDl71gLd/+XnLDzpUBs8icGebtwiHpl4kVszxIRDYAosbF4Rsig==",
++      "license": "MIT",
++      "dependencies": {
++        "iceberg-js": "^0.8.1",
++        "tslib": "2.8.1"
++      },
++      "engines": {
++        "node": ">=22.0.0"
++      }
++    },
++    "node_modules/@supabase/supabase-js": {
++      "version": "2.112.2",
++      "resolved": "https://registry.npmjs.org/@supabase/supabase-js/-/supabase-js-2.112.2.tgz",
++      "integrity": "sha512-UyI1epU9B4X51HvNpkmlwTdF20fEcz2vyvrcDKVzFN4jZN41f5iQRqsiIQjAY5OVJD6ljqA/1g9JQeOTvFHpkA==",
++      "license": "MIT",
++      "dependencies": {
++        "@supabase/auth-js": "2.112.2",
++        "@supabase/functions-js": "2.112.2",
++        "@supabase/postgrest-js": "2.112.2",
++        "@supabase/realtime-js": "2.112.2",
++        "@supabase/storage-js": "2.112.2"
++      },
++      "engines": {
++        "node": ">=22.0.0"
++      },
++      "peerDependencies": {
++        "@opentelemetry/api": ">=1.0.0"
++      },
++      "peerDependenciesMeta": {
++        "@opentelemetry/api": {
++          "optional": true
++        }
++      }
++    },
+     "node_modules/@types/babel__core": {
+       "version": "7.20.5",
+       "resolved": "https://registry.npmjs.org/@types/babel__core/-/babel__core-7.20.5.tgz",
+@@ -1735,6 +1828,15 @@
+         "node": ">= 0.4"
+       }
+     },
++    "node_modules/iceberg-js": {
++      "version": "0.8.1",
++      "resolved": "https://registry.npmjs.org/iceberg-js/-/iceberg-js-0.8.1.tgz",
++      "integrity": "sha512-1dhVQZXhcHje7798IVM+xoo/1ZdVfzOMIc8/rgVSijRK38EDqOJoGula9N/8ZI5RD8QTxNQtK/Gozpr+qUqRRA==",
++      "license": "MIT",
++      "engines": {
++        "node": ">=20.0.0"
++      }
++    },
+     "node_modules/is-binary-path": {
+       "version": "2.1.0",
+       "resolved": "https://registry.npmjs.org/is-binary-path/-/is-binary-path-2.1.0.tgz",
+@@ -2577,6 +2679,12 @@
+       "dev": true,
+       "license": "Apache-2.0"
+     },
++    "node_modules/tslib": {
++      "version": "2.8.1",
++      "resolved": "https://registry.npmjs.org/tslib/-/tslib-2.8.1.tgz",
++      "integrity": "sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w==",
++      "license": "0BSD"
++    },
+     "node_modules/typescript": {
+       "version": "5.9.3",
+       "resolved": "https://registry.npmjs.org/typescript/-/typescript-5.9.3.tgz",
+diff --git a/package.json b/package.json
+index c5e631a..8e46157 100644
+--- a/package.json
++++ b/package.json
+@@ -9,6 +9,7 @@
+     "preview": "vite preview"
+   },
+   "dependencies": {
++    "@supabase/supabase-js": "^2.112.2",
+     "clsx": "^2.1.1",
+     "lucide-react": "^0.408.0",
+     "react": "^18.3.1",
+diff --git a/src/App.tsx b/src/App.tsx
+index bd852e9..788573f 100644
+--- a/src/App.tsx
++++ b/src/App.tsx
+@@ -4,12 +4,27 @@ import { Workspace } from './components/Workspace';
+ import { History } from './screens/History';
+ import { Report } from './screens/Report';
+ import { ContractDoc } from './screens/ContractDoc';
++import { Login } from './screens/Login';
++import { useAuth } from './lib/auth';
+ import type { ScreenId } from './lib/types';
+ import type { SessionCard } from './lib/sessionStore';
+ 
+ export default function App() {
++  const { loading, user, needsFirm, signOut } = useAuth();
+   const [overlayScreen, setOverlayScreen] = useState<ScreenId | null>(null);
+ 
++  if (loading) {
++    return (
++      <div className="min-h-screen flex items-center justify-center text-neutral-400">
++        ...جاري التحميل
++      </div>
++    );
++  }
++
++  if (!user || needsFirm) {
++    return <Login />;
++  }
++
+   useEffect(() => {
+     const onNavigate = (e: Event) => {
+       const detail = (e as CustomEvent<ScreenId>).detail;
+@@ -67,6 +82,7 @@ export default function App() {
+   if (overlayScreen === 'history') {
+     return (
+       <WorkspaceShell current="history" onNavigate={handleNavigate} onNewChat={handleNewChat} onOpenSession={handleOpenSession}>
++        <SignOutButton onSignOut={signOut} />
+         <History onNavigate={(s) => { if (s === 'landing') setOverlayScreen(null); }} />
+       </WorkspaceShell>
+     );
+@@ -74,7 +90,22 @@ export default function App() {
+ 
+   return (
+     <WorkspaceShell current={currentScreen} onNavigate={handleNavigate} onNewChat={handleNewChat} onOpenSession={handleOpenSession}>
++        <SignOutButton onSignOut={signOut} />
+         <Workspace />
+       </WorkspaceShell>
+   );
++}
++
++/* زرار تسجيل خروج بسيط — مكانه مؤقت (ركن الشاشة) لحد ما يتضاف مكان أنسب
++   في تصميم الـ header بتاع WorkspaceShell. */
++function SignOutButton({ onSignOut }: { onSignOut: () => Promise<void> }) {
++  return (
++    <button
++      onClick={() => onSignOut()}
++      className="fixed bottom-3 left-3 z-50 text-xs text-neutral-400 hover:text-neutral-700 bg-white/80 backdrop-blur px-2 py-1 rounded-md border border-neutral-200"
++      dir="rtl"
++    >
++      تسجيل خروج
++    </button>
++  );
+ }
+\ No newline at end of file
+diff --git a/src/components/Workspace.tsx b/src/components/Workspace.tsx
+index ac5a6da..69b1982 100644
+--- a/src/components/Workspace.tsx
++++ b/src/components/Workspace.tsx
+@@ -12,6 +12,8 @@ import { routeMessage } from '../lib/router';
+ import { saveSession, type SessionCard } from '../lib/sessionStore';
+ import type { ScreenId, TaskType, ChatKind } from '../lib/types';
+ import type { MemoResult, ContractResult, SwitchTaskSignal } from '../lib/api';
++import { getRemoteSession } from '../lib/api';
++import { getAccessToken } from '../lib/auth';
+ import { cn } from '../lib/cn';
+ 
+ type Phase = 'idle' | 'thinking' | 'artifact';
+@@ -276,7 +278,7 @@ export function Workspace() {
+   }, []);
+ 
+   /* ── Open an existing session from sidebar/history ── */
+-  const handleOpenSession = useCallback((session: SessionCard) => {
++  const handleOpenSession = useCallback(async (session: SessionCard) => {
+     const kindMap: Partial<Record<string, ArtifactType>> = {
+       'contract-gen': 'contract',
+       review: 'review',
+@@ -308,6 +310,51 @@ export function Workspace() {
+       return;
+     }
+ 
++    // جلسة من الداتابيز (مسجّلة دخول) مالهاش data محفوظة محليًا — نجيبها
++    // من /api/sessions/{id} بدل ما نعمل regenerate كامل من الصفر
++    if (getAccessToken() && (kind === 'memo' || kind === 'contract')) {
++      try {
++        const { result } = await getRemoteSession(session.id);
++        if (result) {
++          chat.reset();
++          memory.clear();
++          setCurrentSessionId(session.id);
++          setInitialPrompt(session.prompt);
++
++          if (kind === 'memo') {
++            const memoResult: MemoResult = {
++              sections: (result.sections as MemoResult['sections']) ?? [],
++              case_metadata: (result.case_metadata as MemoResult['case_metadata']) ?? ({} as MemoResult['case_metadata']),
++              memo: (result.memo_text as string) ?? '',
++            };
++            setMemoData(memoResult);
++            setMemoJobId(null); // مفيش job نشط لسه لحد ما تتكلمي في الشات
++          } else {
++            const clauses = (result.clauses as ContractResult['clauses']) ?? [];
++            const contractResult: ContractResult = {
++              contract_text: clauses.map((c) => c.body ?? '').join('\n\n'),
++              preamble: '',
++              closing: '',
++              clauses,
++              contract_type_key: null,
++              contract_type_ar: (result.contract_type_ar as string) ?? '',
++              clause_validation: null,
++              docx_path: null,
++            };
++            setContractData(contractResult);
++            setContractJobId(null);
++          }
++
++          setActiveKind(kind);
++          setPhase('artifact');
++          setArtifactKey((k) => k + 1);
++          return;
++        }
++      } catch (e) {
++        console.warn('فشل جلب الجلسة من الداتابيز، هنعمل regenerate بدلاً منها:', e);
++      }
++    }
++
+     // fallback لجلسات قديمة اتحفظت قبل هذا الإصلاح ومفيهاش data محفوظة —
+     // اضطراريًا لازم regenerate، بس بنفس الـ id عشان منكررش الجلسة
+     handleNewSession();
+diff --git a/src/lib/api.ts b/src/lib/api.ts
+index 7d3decc..dd25d90 100644
+--- a/src/lib/api.ts
++++ b/src/lib/api.ts
+@@ -6,6 +6,8 @@
+    working before the backend is connected.
+    ───────────────────────────────────────────────────────────── */
+ 
++import { getAccessToken } from './auth';
++
+ const BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '') || '';
+ 
+ /* ════════════════════════════════════════════════
+@@ -78,9 +80,14 @@ export type ChatResponse = {
+    ════════════════════════════════════════════════ */
+ 
+ async function http<T>(path: string, init?: RequestInit): Promise<T> {
++  const token = getAccessToken();
+   const res = await fetch(`${BASE_URL}${path}`, {
+-    headers: { 'Content-Type': 'application/json' },
+     ...init,
++    headers: {
++      'Content-Type': 'application/json',
++      ...(token ? { Authorization: `Bearer ${token}` } : {}),
++      ...(init?.headers ?? {}),
++    },
+   });
+   if (!res.ok) {
+     let detail = '';
+@@ -418,3 +425,53 @@ function mockSendMemoChat(_jobId: string, message: string): Promise<ChatResponse
+     switch_task: null,
+   });
+ }
++
++/* ════════════════════════════════════════════════
++   Remote Sessions (الداتابيز — Supabase)
++   بتشتغل بس للمستخدم المسجّل دخول (getAccessToken() موجود).
++   ════════════════════════════════════════════════ */
++
++export type RemoteSession = {
++  id: string;
++  firm_id: string;
++  created_by: string;
++  type: 'memo' | 'contract' | 'review' | 'research' | 'consultation';
++  title: string;
++  prompt: string | null;
++  pinned: boolean;
++  created_at: string;
++  updated_at: string;
++};
++
++export type RemoteChatMessage = {
++  id: string;
++  session_id: string;
++  role: 'user' | 'assistant';
++  text: string;
++  change_card: unknown;
++  created_at: string;
++};
++
++export async function listRemoteSessions(): Promise<RemoteSession[]> {
++  const res = await http<{ sessions: RemoteSession[] }>('/api/sessions');
++  return res.sessions;
++}
++
++export async function getRemoteSession(id: string): Promise<{
++  session: RemoteSession;
++  result: Record<string, unknown> | null;
++  chat_history: RemoteChatMessage[];
++}> {
++  return http(`/api/sessions/${id}`);
++}
++
++export async function deleteRemoteSession(id: string): Promise<void> {
++  await http(`/api/sessions/${id}`, { method: 'DELETE' });
++}
++
++export async function pinRemoteSession(id: string, pinned: boolean): Promise<void> {
++  await http(`/api/sessions/${id}/pin`, {
++    method: 'POST',
++    body: JSON.stringify({ pinned }),
++  });
++}
+diff --git a/src/lib/auth.tsx b/src/lib/auth.tsx
+new file mode 100644
+index 0000000..3b70689
+--- /dev/null
++++ b/src/lib/auth.tsx
+@@ -0,0 +1,142 @@
++/* ─────────────────────────────────────────────────────────────
++   تسجيل الدخول (Supabase Auth) + إدارة المكتب (firm) بتاع المستخدم.
++
++   الملف ده له نصين:
++   1) جزء "plain" (getAccessToken) — بيستخدمه api.ts عشان يحط التوكن في
++      هيدر أي request، من غير ما api.ts يحتاج يستورد React context.
++   2) AuthProvider/useAuth — للواجهة (شاشة تسجيل الدخول والـ Workspace).
++   ───────────────────────────────────────────────────────────── */
++import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
++import type { Session, User } from '@supabase/supabase-js';
++import { supabase } from './supabaseClient';
++
++const BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '') || '';
++
++/* ═══ جزء plain — يستخدمه api.ts ═══ */
++
++let _accessToken: string | null = null;
++
++export function getAccessToken(): string | null {
++  return _accessToken;
++}
++
++/* ═══ React context ═══ */
++
++type Firm = { id: string; name: string };
++
++type AuthState = {
++  loading: boolean;
++  user: User | null;
++  firms: Firm[];
++  needsFirm: boolean; // مسجّل دخول بس معندوش مكتب لسه (أول مرة)
++  signIn: (email: string, password: string) => Promise<string | null>; // ترجع رسالة خطأ لو فشل
++  signUp: (email: string, password: string) => Promise<string | null>;
++  signOut: () => Promise<void>;
++  createFirm: (name: string) => Promise<string | null>;
++};
++
++const AuthContext = createContext<AuthState | null>(null);
++
++async function fetchFirms(token: string): Promise<Firm[]> {
++  try {
++    const res = await fetch(`${BASE_URL}/api/sessions`, {
++      headers: { Authorization: `Bearer ${token}` },
++    });
++    // /api/sessions بترجع 403 لو المستخدم معندوش firm لسه — مش خطأ حقيقي
++    if (res.status === 403) return [];
++    if (!res.ok) return [];
++    // النداء ده بس للتأكد إن فيه firm (مش لجلب الجلسات فعليًا هنا)
++    return [{ id: 'unknown', name: '' }];
++  } catch {
++    return [];
++  }
++}
++
++export function AuthProvider({ children }: { children: ReactNode }) {
++  const [loading, setLoading] = useState(true);
++  const [user, setUser] = useState<User | null>(null);
++  const [firms, setFirms] = useState<Firm[]>([]);
++
++  useEffect(() => {
++    const applySession = async (session: Session | null) => {
++      _accessToken = session?.access_token ?? null;
++      setUser(session?.user ?? null);
++      if (session?.access_token) {
++        const f = await fetchFirms(session.access_token);
++        setFirms(f);
++      } else {
++        setFirms([]);
++      }
++      setLoading(false);
++    };
++
++    supabase.auth.getSession().then(({ data }) => applySession(data.session));
++
++    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
++      applySession(session);
++    });
++
++    return () => sub.subscription.unsubscribe();
++  }, []);
++
++  const signIn = async (email: string, password: string) => {
++    const { error } = await supabase.auth.signInWithPassword({ email, password });
++    return error ? translateAuthError(error.message) : null;
++  };
++
++  const signUp = async (email: string, password: string) => {
++    const { error } = await supabase.auth.signUp({ email, password });
++    return error ? translateAuthError(error.message) : null;
++  };
++
++  const signOut = async () => {
++    await supabase.auth.signOut();
++  };
++
++  const createFirm = async (name: string) => {
++    if (!_accessToken) return 'مسجّلة دخول؟ جربي تاني.';
++    try {
++      const res = await fetch(`${BASE_URL}/api/firms`, {
++        method: 'POST',
++        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${_accessToken}` },
++        body: JSON.stringify({ name }),
++      });
++      if (!res.ok) {
++        const body = await res.json().catch(() => ({}));
++        return body.detail || 'فشل إنشاء المكتب';
++      }
++      setFirms([{ id: 'created', name }]);
++      return null;
++    } catch (e) {
++      return e instanceof Error ? e.message : 'فشل إنشاء المكتب';
++    }
++  };
++
++  const value: AuthState = {
++    loading,
++    user,
++    firms,
++    needsFirm: !loading && !!user && firms.length === 0,
++    signIn,
++    signUp,
++    signOut,
++    createFirm,
++  };
++
++  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
++}
++
++export function useAuth(): AuthState {
++  const ctx = useContext(AuthContext);
++  if (!ctx) throw new Error('useAuth لازم تتستخدم جوه AuthProvider');
++  return ctx;
++}
++
++function translateAuthError(message: string): string {
++  const map: Record<string, string> = {
++    'Invalid login credentials': 'الإيميل أو الباسورد غلط',
++    'User already registered': 'الإيميل ده مسجّل بالفعل — سجّلي دخول بدل حساب جديد',
++    'Password should be at least 6 characters': 'الباسورد لازم يكون 6 حروف على الأقل',
++  };
++  return map[message] || message;
++}
+diff --git a/src/lib/sessionStore.ts b/src/lib/sessionStore.ts
+index 4af58d9..07c3d4d 100644
+--- a/src/lib/sessionStore.ts
++++ b/src/lib/sessionStore.ts
+@@ -90,6 +90,65 @@ function _savePinned(): void {
+   } catch { /* ignore */ }
+ }
+ 
++/* ═══ مزامنة مع الداتابيز (لو مسجّلة دخول) ═══ */
++
++import { getAccessToken } from './auth';
++import { listRemoteSessions, deleteRemoteSession, pinRemoteSession, type RemoteSession } from './api';
++
++const REMOTE_TYPE_TO_KIND: Record<RemoteSession['type'], ChatKind> = {
++  memo: 'memo',
++  contract: 'contract-gen',
++  review: 'contract-review',
++  research: 'research',
++  consultation: 'case',
++};
++
++function remoteToCard(r: RemoteSession): SessionCard {
++  return {
++    id: r.id,
++    title: r.title || (r.prompt ?? '').slice(0, 60) || 'بدون عنوان',
++    kind: REMOTE_TYPE_TO_KIND[r.type],
++    meta: new Date(r.updated_at).toLocaleDateString('ar-EG'),
++    preview: (r.prompt ?? '').slice(0, 100),
++    tags: [],
++    createdAt: new Date(r.created_at).getTime(),
++    updatedAt: new Date(r.updated_at).getTime(),
++    pinned: r.pinned,
++    prompt: r.prompt ?? '',
++    jobId: null,
++    screenId: r.type === 'contract' ? 'contract-gen' : r.type,
++    // النتيجة الكاملة بتتجاب بس لما تفتحي الجلسة (getRemoteSession) — هنا
++    // بنعرض بس البطاقة في الـ Sidebar، مش محتاجين النص الكامل كله مقدمًا.
++    data: undefined,
++  };
++}
++
++let _syncInFlight = false;
++
++/** تجيب جلسات المستخدم من الداتابيز وتحطها في الكاش المحلي — بتتنفذ بس
++ * لو فيه توكن دخول (مستخدمة مسجّلة). لو مفيش، مفيش تأثير (localStorage
++ * بس زي ما كانت من الأول). */
++export async function syncFromRemote(): Promise<void> {
++  if (_syncInFlight) return;
++  if (!getAccessToken()) return;
++  _syncInFlight = true;
++  try {
++    const remote = await listRemoteSessions();
++    const cards = remote.map(remoteToCard);
++    _sessions = cards;
++    _pinned = new Set(remote.filter((r) => r.pinned).map((r) => r.id));
++    _saveSessions();
++    _savePinned();
++    _emit();
++  } catch (e) {
++    // فشل المزامنة مش لازم يكسر الواجهة — الكاش المحلي (لو موجود) بيفضل زي ما هو
++    // eslint-disable-next-line no-console
++    console.warn('فشلت مزامنة الجلسات من الداتابيز:', e);
++  } finally {
++    _syncInFlight = false;
++  }
++}
++
+ /* ═══ Public API ═══ */
+ 
+ /** يجيب كل الجلسات مرتبة حسب الأحدث */
+@@ -158,11 +217,15 @@ export function deleteSession(id: string): void {
+   _sessions = _loadSessions().filter((s) => s.id !== id);
+   _saveSessions();
+   _emit();
++  if (getAccessToken()) {
++    deleteRemoteSession(id).catch((e) => console.warn('فشل حذف الجلسة من الداتابيز:', e));
++  }
+ }
+ 
+ /** تثبيت/إلغاء تثبيت جلسة */
+ export function togglePin(id: string): void {
+   const pinned = _loadPinned();
++  const willBePinned = !pinned.has(id);
+   if (pinned.has(id)) {
+     pinned.delete(id);
+   } else {
+@@ -171,6 +234,9 @@ export function togglePin(id: string): void {
+   _pinned = pinned;
+   _savePinned();
+   _emit();
++  if (getAccessToken()) {
++    pinRemoteSession(id, willBePinned).catch((e) => console.warn('فشل تثبيت الجلسة في الداتابيز:', e));
++  }
+ }
+ 
+ /** هل الجلسة مثبتة؟ */
+@@ -191,11 +257,15 @@ export function getSnapshot(): SessionCard[] {
+ 
+ /* ═══ React Hook ═══ */
+ 
+-import { useSyncExternalStore, useCallback } from 'react';
++import { useSyncExternalStore, useCallback, useEffect } from 'react';
+ 
+ export function useSessions() {
+   const sessions = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+ 
++  useEffect(() => {
++    syncFromRemote();
++  }, []);
++
+   const pinnedSessions = sessions.filter((s) => _loadPinned().has(s.id));
+   const recentSessions = sessions.filter((s) => !_loadPinned().has(s.id)).slice(0, 10);
+ 
+diff --git a/src/lib/supabaseClient.ts b/src/lib/supabaseClient.ts
+new file mode 100644
+index 0000000..64a1aaa
+--- /dev/null
++++ b/src/lib/supabaseClient.ts
+@@ -0,0 +1,14 @@
++import { createClient } from '@supabase/supabase-js';
++
++const url = import.meta.env.VITE_SUPABASE_URL as string | undefined;
++const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
++
++if (!url || !anonKey) {
++  // eslint-disable-next-line no-console
++  console.warn(
++    'VITE_SUPABASE_URL أو VITE_SUPABASE_ANON_KEY مش موجودين في .env — ' +
++    'تسجيل الدخول والحفظ الدائم للجلسات مش هيشتغلوا لحد ما تضيفيهم.',
++  );
++}
++
++export const supabase = createClient(url ?? '', anonKey ?? '');
+diff --git a/src/main.tsx b/src/main.tsx
+index dfacde0..1c19373 100644
+--- a/src/main.tsx
++++ b/src/main.tsx
+@@ -1,10 +1,13 @@
+ import { StrictMode } from 'react';
+ import { createRoot } from 'react-dom/client';
+ import App from './App';
++import { AuthProvider } from './lib/auth';
+ import './index.css';
+ 
+ createRoot(document.getElementById('root')!).render(
+   <StrictMode>
+-    <App />
++    <AuthProvider>
++      <App />
++    </AuthProvider>
+   </StrictMode>,
+ );
+diff --git a/src/screens/Login.tsx b/src/screens/Login.tsx
+new file mode 100644
+index 0000000..cd59049
+--- /dev/null
++++ b/src/screens/Login.tsx
+@@ -0,0 +1,144 @@
++import { useState } from 'react';
++import { useAuth } from '../lib/auth';
++
++export function Login() {
++  const { needsFirm, signIn, signUp, createFirm } = useAuth();
++
++  if (needsFirm) return <CreateFirmStep onCreate={createFirm} />;
++  return <SignInStep onSignIn={signIn} onSignUp={signUp} />;
++}
++
++function SignInStep({
++  onSignIn,
++  onSignUp,
++}: {
++  onSignIn: (email: string, password: string) => Promise<string | null>;
++  onSignUp: (email: string, password: string) => Promise<string | null>;
++}) {
++  const [mode, setMode] = useState<'signin' | 'signup'>('signin');
++  const [email, setEmail] = useState('');
++  const [password, setPassword] = useState('');
++  const [error, setError] = useState<string | null>(null);
++  const [busy, setBusy] = useState(false);
++  const [signupDone, setSignupDone] = useState(false);
++
++  const handleSubmit = async (e: React.FormEvent) => {
++    e.preventDefault();
++    setError(null);
++    setBusy(true);
++    const fn = mode === 'signin' ? onSignIn : onSignUp;
++    const err = await fn(email, password);
++    setBusy(false);
++    if (err) {
++      setError(err);
++    } else if (mode === 'signup') {
++      setSignupDone(true);
++    }
++  };
++
++  if (signupDone) {
++    return (
++      <div className="min-h-screen flex items-center justify-center bg-neutral-50" dir="rtl">
++        <div className="max-w-sm w-full text-center space-y-3 p-6">
++          <h1 className="text-xl font-bold">اتبعتلك رسالة تأكيد</h1>
++          <p className="text-neutral-600">افتحي إيميلك ({email}) ودوسي على رابط التأكيد، بعدها سجّلي دخول من هنا.</p>
++          <button
++            className="text-sm text-blue-600 underline"
++            onClick={() => { setSignupDone(false); setMode('signin'); }}
++          >
++            رجوع لتسجيل الدخول
++          </button>
++        </div>
++      </div>
++    );
++  }
++
++  return (
++    <div className="min-h-screen flex items-center justify-center bg-neutral-50" dir="rtl">
++      <form onSubmit={handleSubmit} className="max-w-sm w-full space-y-4 p-6 bg-white rounded-xl shadow-sm border border-neutral-200">
++        <h1 className="text-xl font-bold">مُحَكِّم</h1>
++        <p className="text-sm text-neutral-500">
++          {mode === 'signin' ? 'سجّلي دخول لمكتبك' : 'أنشئي حساب جديد'}
++        </p>
++
++        <input
++          type="email"
++          required
++          placeholder="الإيميل"
++          value={email}
++          onChange={(e) => setEmail(e.target.value)}
++          className="w-full border border-neutral-300 rounded-lg px-3 py-2 text-sm"
++          dir="ltr"
++        />
++        <input
++          type="password"
++          required
++          minLength={6}
++          placeholder="الباسورد"
++          value={password}
++          onChange={(e) => setPassword(e.target.value)}
++          className="w-full border border-neutral-300 rounded-lg px-3 py-2 text-sm"
++          dir="ltr"
++        />
++
++        {error && <p className="text-sm text-red-600">{error}</p>}
++
++        <button
++          type="submit"
++          disabled={busy}
++          className="w-full bg-neutral-900 text-white rounded-lg py-2 text-sm font-medium disabled:opacity-50"
++        >
++          {busy ? '...جاري' : mode === 'signin' ? 'دخول' : 'إنشاء حساب'}
++        </button>
++
++        <button
++          type="button"
++          className="w-full text-sm text-neutral-500 underline"
++          onClick={() => { setMode(mode === 'signin' ? 'signup' : 'signin'); setError(null); }}
++        >
++          {mode === 'signin' ? 'معنديش حساب — إنشاء حساب جديد' : 'عندي حساب بالفعل — تسجيل دخول'}
++        </button>
++      </form>
++    </div>
++  );
++}
++
++function CreateFirmStep({ onCreate }: { onCreate: (name: string) => Promise<string | null> }) {
++  const [name, setName] = useState('');
++  const [error, setError] = useState<string | null>(null);
++  const [busy, setBusy] = useState(false);
++
++  const handleSubmit = async (e: React.FormEvent) => {
++    e.preventDefault();
++    setBusy(true);
++    setError(null);
++    const err = await onCreate(name.trim() || 'مكتبي');
++    setBusy(false);
++    if (err) setError(err);
++  };
++
++  return (
++    <div className="min-h-screen flex items-center justify-center bg-neutral-50" dir="rtl">
++      <form onSubmit={handleSubmit} className="max-w-sm w-full space-y-4 p-6 bg-white rounded-xl shadow-sm border border-neutral-200">
++        <h1 className="text-xl font-bold">خطوة أخيرة</h1>
++        <p className="text-sm text-neutral-500">اسم مكتبك/فريقك — هتقدري تضيفي زميلاتك بعد كده.</p>
++        <input
++          type="text"
++          required
++          placeholder="مثال: مكتب الرفاعي للمحاماة"
++          value={name}
++          onChange={(e) => setName(e.target.value)}
++          className="w-full border border-neutral-300 rounded-lg px-3 py-2 text-sm"
++        />
++        {error && <p className="text-sm text-red-600">{error}</p>}
++        <button
++          type="submit"
++          disabled={busy}
++          className="w-full bg-neutral-900 text-white rounded-lg py-2 text-sm font-medium disabled:opacity-50"
++        >
++          {busy ? '...جاري' : 'إنشاء المكتب والبدء'}
++        </button>
++      </form>
++    </div>
++  );
++}

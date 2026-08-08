@@ -90,6 +90,65 @@ function _savePinned(): void {
   } catch { /* ignore */ }
 }
 
+/* ═══ مزامنة مع الداتابيز (لو مسجّلة دخول) ═══ */
+
+import { getAccessToken } from './auth';
+import { listRemoteSessions, deleteRemoteSession, pinRemoteSession, type RemoteSession } from './api';
+
+const REMOTE_TYPE_TO_KIND: Record<RemoteSession['type'], ChatKind> = {
+  memo: 'memo',
+  contract: 'contract-gen',
+  review: 'contract-review',
+  research: 'research',
+  consultation: 'case',
+};
+
+function remoteToCard(r: RemoteSession): SessionCard {
+  return {
+    id: r.id,
+    title: r.title || (r.prompt ?? '').slice(0, 60) || 'بدون عنوان',
+    kind: REMOTE_TYPE_TO_KIND[r.type],
+    meta: new Date(r.updated_at).toLocaleDateString('ar-EG'),
+    preview: (r.prompt ?? '').slice(0, 100),
+    tags: [],
+    createdAt: new Date(r.created_at).getTime(),
+    updatedAt: new Date(r.updated_at).getTime(),
+    pinned: r.pinned,
+    prompt: r.prompt ?? '',
+    jobId: null,
+    screenId: r.type === 'contract' ? 'contract-gen' : r.type,
+    // النتيجة الكاملة بتتجاب بس لما تفتحي الجلسة (getRemoteSession) — هنا
+    // بنعرض بس البطاقة في الـ Sidebar، مش محتاجين النص الكامل كله مقدمًا.
+    data: undefined,
+  };
+}
+
+let _syncInFlight = false;
+
+/** تجيب جلسات المستخدم من الداتابيز وتحطها في الكاش المحلي — بتتنفذ بس
+ * لو فيه توكن دخول (مستخدمة مسجّلة). لو مفيش، مفيش تأثير (localStorage
+ * بس زي ما كانت من الأول). */
+export async function syncFromRemote(): Promise<void> {
+  if (_syncInFlight) return;
+  if (!getAccessToken()) return;
+  _syncInFlight = true;
+  try {
+    const remote = await listRemoteSessions();
+    const cards = remote.map(remoteToCard);
+    _sessions = cards;
+    _pinned = new Set(remote.filter((r) => r.pinned).map((r) => r.id));
+    _saveSessions();
+    _savePinned();
+    _emit();
+  } catch (e) {
+    // فشل المزامنة مش لازم يكسر الواجهة — الكاش المحلي (لو موجود) بيفضل زي ما هو
+    // eslint-disable-next-line no-console
+    console.warn('فشلت مزامنة الجلسات من الداتابيز:', e);
+  } finally {
+    _syncInFlight = false;
+  }
+}
+
 /* ═══ Public API ═══ */
 
 /** يجيب كل الجلسات مرتبة حسب الأحدث */
@@ -158,11 +217,15 @@ export function deleteSession(id: string): void {
   _sessions = _loadSessions().filter((s) => s.id !== id);
   _saveSessions();
   _emit();
+  if (getAccessToken()) {
+    deleteRemoteSession(id).catch((e) => console.warn('فشل حذف الجلسة من الداتابيز:', e));
+  }
 }
 
 /** تثبيت/إلغاء تثبيت جلسة */
 export function togglePin(id: string): void {
   const pinned = _loadPinned();
+  const willBePinned = !pinned.has(id);
   if (pinned.has(id)) {
     pinned.delete(id);
   } else {
@@ -171,6 +234,9 @@ export function togglePin(id: string): void {
   _pinned = pinned;
   _savePinned();
   _emit();
+  if (getAccessToken()) {
+    pinRemoteSession(id, willBePinned).catch((e) => console.warn('فشل تثبيت الجلسة في الداتابيز:', e));
+  }
 }
 
 /** هل الجلسة مثبتة؟ */
@@ -191,10 +257,14 @@ export function getSnapshot(): SessionCard[] {
 
 /* ═══ React Hook ═══ */
 
-import { useSyncExternalStore, useCallback } from 'react';
+import { useSyncExternalStore, useCallback, useEffect } from 'react';
 
 export function useSessions() {
   const sessions = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+
+  useEffect(() => {
+    syncFromRemote();
+  }, []);
 
   const pinnedSessions = sessions.filter((s) => _loadPinned().has(s.id));
   const recentSessions = sessions.filter((s) => !_loadPinned().has(s.id)).slice(0, 10);
