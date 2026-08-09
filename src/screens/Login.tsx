@@ -1,144 +1,111 @@
-import { useState } from 'react';
+import { useState, useEffect, type FormEvent } from 'react';
+import { Briefcase, Loader2, AlertCircle, ArrowLeft, User as UserIcon } from 'lucide-react';
+import { cn } from '../lib/cn';
 import { useAuth } from '../lib/auth';
+import { AuthShell, MobileLogo, AuthCard, FormField } from './auth/AuthShared';
+import { Splash } from './auth/Splash';
+import { AuthFlow } from './auth/AuthFlow';
 
-export function Login() {
-  const { needsFirm, signIn, signUp, createFirm } = useAuth();
-
-  if (needsFirm) return <CreateFirmStep onCreate={createFirm} />;
-  return <SignInStep onSignIn={signIn} onSignUp={signUp} />;
-}
-
-function SignInStep({
-  onSignIn,
-  onSignUp,
-}: {
-  onSignIn: (email: string, password: string) => Promise<string | null>;
-  onSignUp: (email: string, password: string) => Promise<string | null>;
-}) {
-  const [mode, setMode] = useState<'signin' | 'signup'>('signin');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [signupDone, setSignupDone] = useState(false);
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError(null);
-    setBusy(true);
-    const fn = mode === 'signin' ? onSignIn : onSignUp;
-    const err = await fn(email, password);
-    setBusy(false);
-    if (err) {
-      setError(err);
-    } else if (mode === 'signup') {
-      setSignupDone(true);
-    }
-  };
-
-  if (signupDone) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-neutral-50" dir="rtl">
-        <div className="max-w-sm w-full text-center space-y-3 p-6">
-          <h1 className="text-xl font-bold">اتبعتلك رسالة تأكيد</h1>
-          <p className="text-neutral-600">افتحي إيميلك ({email}) ودوسي على رابط التأكيد، بعدها سجّلي دخول من هنا.</p>
-          <button
-            className="text-sm text-blue-600 underline"
-            onClick={() => { setSignupDone(false); setMode('signin'); }}
-          >
-            رجوع لتسجيل الدخول
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="min-h-screen flex items-center justify-center bg-neutral-50" dir="rtl">
-      <form onSubmit={handleSubmit} className="max-w-sm w-full space-y-4 p-6 bg-white rounded-xl shadow-sm border border-neutral-200">
-        <h1 className="text-xl font-bold">مُحَكِّم</h1>
-        <p className="text-sm text-neutral-500">
-          {mode === 'signin' ? 'سجّلي دخول لمكتبك' : 'أنشئي حساب جديد'}
-        </p>
-
-        <input
-          type="email"
-          required
-          placeholder="الإيميل"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          className="w-full border border-neutral-300 rounded-lg px-3 py-2 text-sm"
-          dir="ltr"
-        />
-        <input
-          type="password"
-          required
-          minLength={6}
-          placeholder="الباسورد"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          className="w-full border border-neutral-300 rounded-lg px-3 py-2 text-sm"
-          dir="ltr"
-        />
-
-        {error && <p className="text-sm text-red-600">{error}</p>}
-
-        <button
-          type="submit"
-          disabled={busy}
-          className="w-full bg-neutral-900 text-white rounded-lg py-2 text-sm font-medium disabled:opacity-50"
-        >
-          {busy ? '...جاري' : mode === 'signin' ? 'دخول' : 'إنشاء حساب'}
-        </button>
-
-        <button
-          type="button"
-          className="w-full text-sm text-neutral-500 underline"
-          onClick={() => { setMode(mode === 'signin' ? 'signup' : 'signin'); setError(null); }}
-        >
-          {mode === 'signin' ? 'معنديش حساب — إنشاء حساب جديد' : 'عندي حساب بالفعل — تسجيل دخول'}
-        </button>
-      </form>
-    </div>
-  );
-}
-
-function CreateFirmStep({ onCreate }: { onCreate: (name: string) => Promise<string | null> }) {
+function CreateFirmStep() {
+  const { createFirm } = useAuth();
   const [name, setName] = useState('');
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    setBusy(true);
     setError(null);
-    const err = await onCreate(name.trim() || 'مكتبي');
-    setBusy(false);
+    setLoading(true);
+    const err = await createFirm(name.trim() || 'مكتبي');
+    setLoading(false);
     if (err) setError(err);
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-neutral-50" dir="rtl">
-      <form onSubmit={handleSubmit} className="max-w-sm w-full space-y-4 p-6 bg-white rounded-xl shadow-sm border border-neutral-200">
-        <h1 className="text-xl font-bold">خطوة أخيرة</h1>
-        <p className="text-sm text-neutral-500">اسم مكتبك/فريقك — هتقدري تضيفي زميلاتك بعد كده.</p>
-        <input
-          type="text"
-          required
-          placeholder="مثال: مكتب الرفاعي للمحاماة"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          className="w-full border border-neutral-300 rounded-lg px-3 py-2 text-sm"
-        />
-        {error && <p className="text-sm text-red-600">{error}</p>}
-        <button
-          type="submit"
-          disabled={busy}
-          className="w-full bg-neutral-900 text-white rounded-lg py-2 text-sm font-medium disabled:opacity-50"
-        >
-          {busy ? '...جاري' : 'إنشاء المكتب والبدء'}
-        </button>
-      </form>
-    </div>
+    <AuthShell
+      brandingChildren={
+        <>
+          <h1
+            className="text-white text-3xl xl:text-4xl leading-[1.2] font-700"
+            style={{ fontFamily: '"IBM Plex Sans Arabic", "Cairo", sans-serif' }}
+          >
+            خطوة أخيرة
+          </h1>
+          <p className="mt-4 text-primary-200/70 text-sm font-500 leading-relaxed">
+            اسم مكتبك أو فريقك — هتقدري تضيفي زميلاتك بعد كده.
+          </p>
+        </>
+      }
+    >
+      <MobileLogo />
+      <AuthCard>
+        <div className="mb-6 text-center">
+          <div className="mx-auto w-12 h-12 rounded-2xl bg-primary-50 border border-primary-100 grid place-items-center mb-4">
+            <Briefcase className="w-5 h-5 text-primary-600" strokeWidth={1.8} />
+          </div>
+          <h2 className="font-display font-700 text-ink text-2xl leading-tight">خطوة أخيرة</h2>
+          <p className="mt-1.5 text-sand-500 text-[0.82rem] leading-relaxed">
+            اسم مكتبك/فريقك — هتقدري تضيفي زميلاتك بعد كده
+          </p>
+        </div>
+
+        {error && (
+          <div className="mb-4 flex items-start gap-2.5 rounded-xl bg-danger-50 border border-danger-200 px-3.5 py-3 animate-fade-down" role="alert">
+            <AlertCircle className="w-4 h-4 text-danger-500 shrink-0 mt-0.5" strokeWidth={2} />
+            <p className="text-[0.78rem] text-danger-700 font-500 leading-relaxed">{error}</p>
+          </div>
+        )}
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <FormField
+            label="اسم المكتب/الفريق"
+            icon={UserIcon}
+            value={name}
+            onChange={setName}
+            placeholder="مثال: مكتب الرفاعي للمحاماة"
+            autoFocus
+          />
+
+          <button
+            type="submit"
+            disabled={loading}
+            className={cn(
+              'ripple-container relative w-full inline-flex items-center justify-center font-600 transition-all duration-200 ease-out-expo focus-ring active:scale-[0.98] disabled:opacity-70 disabled:pointer-events-none',
+              'h-12 rounded-2xl text-[0.88rem] gap-2 mt-2',
+              'bg-gradient-to-b from-primary-500 to-primary-600 text-white hover:from-primary-500 hover:to-primary-700 shadow-soft hover:shadow-card',
+            )}
+          >
+            {loading ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" strokeWidth={2} />
+                <span>جارٍ الإنشاء...</span>
+              </>
+            ) : (
+              <>
+                <span>إنشاء المكتب والبدء</span>
+                <ArrowLeft className="w-4 h-4" strokeWidth={1.8} />
+              </>
+            )}
+          </button>
+        </form>
+      </AuthCard>
+    </AuthShell>
   );
+}
+
+/* ════════════════════════════════════════════════
+   Login — نقطة الدخول: Splash مرة واحدة بس لكل جلسة
+   متصفح، بعدها welcome/login/signup أو خطوة المكتب.
+   ════════════════════════════════════════════════ */
+export function Login() {
+  const { needsFirm } = useAuth();
+  const [showSplash, setShowSplash] = useState(() => !sessionStorage.getItem('muhakem-splash-shown'));
+
+  useEffect(() => {
+    if (showSplash) sessionStorage.setItem('muhakem-splash-shown', '1');
+  }, [showSplash]);
+
+  if (showSplash) return <Splash onDone={() => setShowSplash(false)} />;
+  if (needsFirm) return <CreateFirmStep />;
+  return <AuthFlow />;
 }

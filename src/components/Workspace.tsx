@@ -9,7 +9,7 @@ import { QuickActionWizard } from './QuickActionWizard';
 import { useSessionChat, type TaskKind } from '../lib/useSessionChat';
 import { useMemory } from '../lib/memory';
 import { routeMessage } from '../lib/router';
-import { saveSession, type SessionCard } from '../lib/sessionStore';
+import { saveSession, syncFromRemote, type SessionCard } from '../lib/sessionStore';
 import type { ScreenId, TaskType, ChatKind } from '../lib/types';
 import type { MemoResult, ContractResult, SwitchTaskSignal } from '../lib/api';
 import { getRemoteSession } from '../lib/api';
@@ -110,7 +110,7 @@ export function Workspace() {
   }, []);
 
   /* ── Thinking complete → show artifact + save session ── */
-  const handleThinkingComplete = useCallback((result: MemoResult | ContractResult, jobId: string) => {
+  const handleThinkingComplete = useCallback((result: MemoResult | ContractResult, jobId: string, dbSessionId: string | null) => {
     const artifactKind = thinkingKind as ArtifactType;
 
     if (artifactKind === 'memo' && result) {
@@ -118,11 +118,14 @@ export function Workspace() {
       setMemoData(memoResult);
       if (jobId) setMemoJobId(jobId);
 
-      // احفظ الجلسة — لو دي إعادة فتح جلسة قايمة استخدمي نفس الـ id
-      // (upsert)، ولو جلسة جديدة اعملي id جديد واحد بس واحفظيه في الـ state
+      // احفظ الجلسة — لو دي إعادة فتح جلسة قايمة استخدمي نفس الـ id (upsert).
+      // لو فيه db_session_id (يعني مسجّلة دخول وBackend عمل الجلسة فعليًا في
+      // الداتابيز)، استخدمي نفسه بالظبط — عشان لما الـ Sidebar يزامن من
+      // الداتابيز بعد كده يلاقي نفس الـ id ويحدّث مكانها، مش يضيفها تاني
+      // كجلسة منفصلة (ده كان سبب ظهور المذكرة مرتين في السايدبار).
       if (memoResult.sections && memoResult.sections.length > 0) {
         const info = extractMemoInfo(memoResult, initialPrompt);
-        const id = currentSessionId ?? `memo-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const id = dbSessionId ?? currentSessionId ?? `memo-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         if (!currentSessionId) setCurrentSessionId(id);
         saveSession({
           id,
@@ -148,7 +151,7 @@ export function Workspace() {
       // نفس منطق الـ upsert بتاع المذكرات
       if (contractResult.clauses && contractResult.clauses.length > 0) {
         const info = extractContractInfo(contractResult, initialPrompt);
-        const id = currentSessionId ?? `contract-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const id = dbSessionId ?? currentSessionId ?? `contract-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         if (!currentSessionId) setCurrentSessionId(id);
         saveSession({
           id,
@@ -164,6 +167,13 @@ export function Workspace() {
           data: contractResult,
         });
       }
+    }
+
+    // خزّنّا محليًا فورًا فوق (لعرض سريع في نفس اللحظة) — دلوقتي نزامن مع
+    // النسخة الحقيقية في الداتابيز (لو مسجّلة دخول) عشان أي تفاصيل زي
+    // pinned/تاريخ التحديث تبقى دقيقة، ومتفرقش عن نسخة الداتابيز.
+    if (dbSessionId) {
+      syncFromRemote();
     }
 
     if (artifactKind === 'review' || artifactKind === 'research' || artifactKind === 'consultation') {

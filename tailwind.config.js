@@ -48,6 +48,7 @@ export default {
         ink: ['"Aref Ruqaa Ink"', '"Scheherazade New"', '"IBM Plex Sans Arabic"', 'serif'],
       },
       borderRadius: { '4xl': '2rem', '5xl': '2.5rem' },
+      fontWeight: { '400': '400', '500': '500', '600': '600', '700': '700' },
       boxShadow: {
         'soft': '0 1px 2px rgba(15,76,92,0.04), 0 4px 16px rgba(15,76,92,0.06)',
         'card': '0 1px 3px rgba(15,76,92,0.05), 0 8px 28px rgba(15,76,92,0.08)',

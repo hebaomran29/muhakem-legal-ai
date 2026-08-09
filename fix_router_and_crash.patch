@@ -1,0 +1,581 @@
+diff --git a/backend/main.py b/backend/main.py
+index bfbcbaa..1a8c9f6 100644
+--- a/backend/main.py
++++ b/backend/main.py
+@@ -268,6 +268,7 @@ def _run_job(job_id: str):
+                     "critic_issues": result["validation"]["critic_issues"],
+                 },
+                 "case_facts": case_facts,
++                "sources": result.get("sources", {}),
+             }
+     except Exception as e:
+         with _jobs_lock:
+@@ -304,15 +305,135 @@ def _classify_target_section(message: str, sections: list[dict]) -> str:
+ 
+ أخرجي فقط الـ id بتاع القسم الأنسب لهذا الطلب من القائمة أعلاه بالحرف
+ (مثال: waqai) — بدون أي شرح. لو الطلب مش واضح لأي قسم بالتحديد، أخرجي: unclear"""
+-    response = pipeline.llm.chat.completions.create(
+-        model=pipeline.LLM_MODEL,
+-        messages=[{"role": "user", "content": prompt}],
+-        temperature=0.0, max_tokens=15,
+-    )
+-    result = response.choices[0].message.content.strip()
++    try:
++        result = pipeline.llm_text([{"role": "user", "content": prompt}],
++                                    temperature=0.0, max_tokens=15)
++    except RuntimeError:
++        return "unclear"
+     return result if result in SECTION_IDS else "unclear"
+ 
+ 
++TASK_LABELS = {
++    "memo": "مذكرة دفاع",
++    "contract": "صياغة عقد",
++    "review": "مراجعة عقد",
++    "research": "بحث قانوني",
++    "consultation": "استشارة قانونية",
++}
++
++
++def _classify_chat_action(message: str, current_task: str) -> dict:
++    """الراوتر الموحّد لأي شات تعديل (مذكرة أو عقد) — نداء LLM واحد بيحدد
++    واحدة من 3 حالات، مش اتنين بس زي _classify_chat_intent القديمة:
++      - edit: تعديل/حذف/إعادة صياغة جزء من {current_task} الحالية
++      - question: سؤال معلوماتي عن {current_task} الحالية من غير تعديل
++      - switch_task: طلب مهمة مختلفة تمامًا (مش استكمال لنفس المهمة الحالية)
++
++    ده اللي بيسد الفجوة اللي كانت موجودة: قبل كده لو المحامية جوه شات
++    المذكرة كتبت "عايزة كمان أعمل عقد إيجار"، الشات كان يحاول يفهمها كتعديل
++    أو سؤال عن المذكرة نفسه، من غير أي وعي إنها بتطلب مهمة تانية خالص.
++
++    Fail-safe: أي غموض أو فشل في الرد → ترجع "edit" (السلوك الأصلي قبل
++    الإضافة دي) عشان منكسرش حاجة شغالة."""
++    other_tasks = ", ".join(f"{k} ({v})" for k, v in TASK_LABELS.items() if k != current_task)
++    prompt = f"""أنتِ الراوتر الموحّد في نظام "مُحَكِّم" القانوني. المستخدم حالياً
++جوه شاشة "{TASK_LABELS.get(current_task, current_task)}" بيتكلم في شات التعديل بتاعها.
++
++صنّفي رسالته كواحدة من 3 حالات بس:
++- "edit": طلب تعديل/حذف/إعادة صياغة جزء من {TASK_LABELS.get(current_task, current_task)} الحالية
++- "question": سؤال معلوماتي عن {TASK_LABELS.get(current_task, current_task)} الحالية
++  (مرجع قانوني، توضيح، سبب) من غير طلب تعديل
++- "switch_task": طلب مهمة مختلفة تمامًا مش استكمال لـ {TASK_LABELS.get(current_task, current_task)}
++  الحالية — يعني عايزة تبدأ واحدة من: {other_tasks}
++
++⚠️ لو الرسالة ممكن تتفهم كتعديل على نفس القضية الحالية (حتى لو مش واضح
++100%)، صنّفيها "edit" أو "question" — متفترضيش switch_task إلا لو صريح
++إن المستخدم بيتكلم عن قضية أو مهمة مختلفة تمامًا.
++
++رسالة المستخدم: "{message}"
++
++لو switch_task، حددي كمان new_intent من: memo, contract, review, research, consultation
++
++أجب بـ JSON فقط بدون أي نص إضافي:
++{{"action": "edit|question|switch_task", "new_intent": "..." أو null}}"""
++
++    fallback = {"action": "edit", "new_intent": None}
++    try:
++        raw = pipeline.llm_text([{"role": "user", "content": prompt}],
++                                 temperature=0.0, max_tokens=60)
++    except RuntimeError:
++        return fallback
++
++    raw = re.sub(r"^```json|```$", "", raw, flags=re.MULTILINE).strip()
++    try:
++        data = json.loads(raw)
++    except Exception:
++        return fallback
++
++    action = data.get("action") if data.get("action") in ("edit", "question", "switch_task") else "edit"
++    new_intent = data.get("new_intent") if data.get("new_intent") in TASK_LABELS else None
++    if action == "switch_task" and new_intent is None:
++        action = "edit"  # لو مش متأكدة من نوع المهمة الجديدة، متسيبهاش تعلّق فاضي
++    return {"action": action, "new_intent": new_intent}
++
++
++def _format_sources_for_chat(sources: dict) -> str:
++    """يبني نص مختصر بالمصادر (أحكام نقض + مواد قانونية) اللي اتجابت
++    وقت توليد المذكرة، عشان الشات يقدر يستشهد بيها لو المحامية سألت."""
++    if not sources:
++        return "لا توجد مصادر محفوظة لهذه المذكرة."
++
++    blocks = []
++    cassation = sources.get("cassation") or []
++    if cassation:
++        lines = []
++        for c in cassation:
++            meta = c.get("metadata", {})
++            ref = meta.get("ruling_num") or meta.get("ruling_number") or ""
++            year = meta.get("ruling_year") or meta.get("year") or ""
++            label = f"طعن رقم {ref} لسنة {year}" if ref else c.get("title", "حكم نقض")
++            blocks.append(f"[{label}]\n{c.get('content', '')[:500]}")
++        blocks.insert(0, "## أحكام نقض:")
++
++    laws = (sources.get("laws") or []) + (sources.get("laws2") or [])
++    if laws:
++        law_lines = ["## مواد قانونية:"]
++        for l in laws:
++            title = l.get("title", "")
++            art = l.get("article_num", "")
++            label = f"{title} - مادة {art}" if art else title
++            law_lines.append(f"[{label}]\n{l.get('content', '')[:500]}")
++        blocks.extend(law_lines)
++
++    return "\n\n".join(blocks) if blocks else "لا توجد مصادر محفوظة لهذه المذكرة."
++
++
++def _answer_legal_question(message: str, sources: dict, sections: list[dict]) -> str:
++    """يرد على سؤال معلوماتي بالاستناد فقط للمصادر المحفوظة وقت التوليد —
++    من غير ما يعدّل المذكرة، ومن غير اختراع مراجع مش موجودة فعلاً."""
++    sources_text = _format_sources_for_chat(sources)
++    sections_text = "\n\n".join(f"### {s['title']}\n{s['body']}" for s in sections)
++
++    prompt = f"""أنتِ مساعدة قانونية بترد على سؤال محامية بخصوص مذكرة دفاع كتبتها.
++جاوبي بالاستناد فقط للمصادر الموجودة تحت — ممنوع تخترعي رقم طعن أو مادة قانونية
++مش موجودة في المصادر دي. لو السؤال عن مرجع مش موجود في المصادر، قولي بوضوح
++إن المرجع ده مش من ضمن اللي استُخدم وقت التوليد.
++
++## نص المذكرة الحالي:
++{sections_text}
++
++## المصادر المستخدمة وقت التوليد:
++{sources_text}
++
++## سؤال المحامية:
++{message}
++
++جاوبي بإيجاز ودقة، واذكري المرجع المحدد (رقم الطعن أو المادة) لو موجود:"""
++
++    return pipeline.llm_text([{"role": "user", "content": prompt}],
++                              temperature=0.1, max_tokens=600)
++
++
+ def _rewrite_section(section: dict, message: str, crime_type: str | None,
+                       legal_nature: str | None) -> str:
+     """يعيد صياغة قسم واحد بس بناءً على طلب الشات، مع الالتزام بنفس
+@@ -343,12 +464,8 @@ def _rewrite_section(section: dict, message: str, crime_type: str | None,
+ 
+ أخرجي نص القسم الجديد فقط:"""
+ 
+-    response = pipeline.llm.chat.completions.create(
+-        model=pipeline.LLM_MODEL,
+-        messages=[{"role": "user", "content": prompt}],
+-        temperature=0.2, max_tokens=1500,
+-    )
+-    return response.choices[0].message.content.strip()
++    return pipeline.llm_text([{"role": "user", "content": prompt}],
++                              temperature=0.2, max_tokens=1500)
+ 
+ 
+ def _handle_chat_edit(job: dict, message: str) -> dict:
+@@ -357,6 +474,26 @@ def _handle_chat_edit(job: dict, message: str) -> dict:
+     crime_type = result["crime_type"]
+     legal_nature = result["legal_nature"]
+ 
++    action = _classify_chat_action(message, "memo")
++    if action["action"] == "switch_task":
++        new_intent = action["new_intent"]
++        return {
++            "reply": f"تمام، فهمت إنك عايزة {TASK_LABELS[new_intent]} — هحوّلك دلوقتي.",
++            "updated_sections": None,
++            "change_card": None,
++            "warnings": [],
++            "switch_task": {"intent": new_intent, "enriched_prompt": message},
++        }
++    if action["action"] == "question":
++        answer = _answer_legal_question(message, result.get("sources", {}), sections)
++        return {
++            "reply": answer,
++            "updated_sections": None,
++            "change_card": None,
++            "warnings": [],
++            "switch_task": None,
++        }
++
+     target_id = _classify_target_section(message, sections)
+     is_delete_request = any(k in message for k in DELETE_KEYWORDS)
+ 
+@@ -512,13 +649,7 @@ async def router_endpoint(payload: RouterRequest):
+             conversation.append({"role": msg.role, "content": msg.text})
+         conversation.append({"role": "user", "content": payload.current_text})
+ 
+-        response = pipeline.llm.chat.completions.create(
+-            model=pipeline.LLM_MODEL,
+-            messages=conversation,
+-            temperature=0.1,
+-            max_tokens=600,
+-        )
+-        raw = response.choices[0].message.content.strip()
++        raw = pipeline.llm_text(conversation, temperature=0.1, max_tokens=600)
+         # handle possible markdown fences
+         if raw.startswith("```"):
+             raw = re.sub(r"^```(?:json)?\s*", "", raw)
+@@ -666,6 +797,8 @@ def chat_edit(payload: ChatEditRequest):
+     except Exception as e:
+         raise HTTPException(status_code=500, detail=f"فشل التعديل: {e}")
+ 
++    response.setdefault("switch_task", None)
++
+     with _jobs_lock:
+         job["chat_history"].append({"role": "user", "message": payload.message})
+         job["chat_history"].append({"role": "assistant", "message": response["reply"]})
+@@ -881,11 +1014,55 @@ def _rewrite_contract_clause(clause: dict, message: str, contract_type_ar: str,
+     return cp.generate_single_clause(modified_clause, contract_type_ar, laws_context)
+ 
+ 
++def _answer_contract_question(message: str, clauses: list[dict]) -> str:
++    """يرد على سؤال معلوماتي عن العقد (مرجع قانوني لبند معين، توضيح، إلخ)
++    عن طريق استرجاع مباشر من قاعدة القوانين — من غير ما يعدّل العقد."""
++    rag_resources = cp.load_rag_resources()
++    laws_context = cp.retrieve_laws_context(message, rag_resources, top_k=4)
++    clauses_text = "\n\n".join(f"بند {c['index']} - {c['title']}:\n{c['body']}" for c in clauses)
++
++    prompt = f"""أنتِ مساعدة قانونية بترد على سؤال عن عقد. جاوبي بالاستناد فقط
++للمرجع القانوني الموجود تحت — ممنوع تخترعي مادة قانونية مش موجودة. لو المرجع
++غير متاح، قولي بوضوح إن معندكيش مرجع قانوني محدد لده.
++
++## بنود العقد الحالية:
++{clauses_text}
++
++## مرجع قانوني متاح:
++{laws_context or 'لا يوجد مرجع قانوني ذو صلة متاح.'}
++
++## سؤال المستخدم:
++{message}
++
++جاوبي بإيجاز ودقة:"""
++
++    return pipeline.llm_text([{"role": "user", "content": prompt}],
++                              temperature=0.1, max_tokens=600)
++
++
+ def _handle_contract_chat_edit(job: dict, message: str) -> dict:
+     result = job["result"]
+     clauses = result["clauses"]
+     contract_type_ar = result.get("contract_type_ar", "")
+ 
++    action = _classify_chat_action(message, "contract")
++    if action["action"] == "switch_task":
++        new_intent = action["new_intent"]
++        return {
++            "reply": f"تمام، فهمت إنك عايز {TASK_LABELS[new_intent]} — هحوّلك دلوقتي.",
++            "updated_clauses": None,
++            "change_card": None,
++            "switch_task": {"intent": new_intent, "enriched_prompt": message},
++        }
++    if action["action"] == "question":
++        answer = _answer_contract_question(message, clauses)
++        return {
++            "reply": answer,
++            "updated_clauses": None,
++            "change_card": None,
++            "switch_task": None,
++        }
++
+     target_idx = _classify_contract_clause(message, clauses)
+     is_delete = any(k in message for k in CONTRACT_DELETE_KEYWORDS)
+ 
+@@ -1023,6 +1200,8 @@ def contract_chat_edit(payload: ContractChatEditRequest):
+     except Exception as e:
+         raise HTTPException(status_code=500, detail=f"فشل تعديل العقد: {e}")
+ 
++    response.setdefault("switch_task", None)
++
+     with _contract_jobs_lock:
+         job["chat_history"].append({"role": "user", "message": payload.message})
+         job["chat_history"].append({"role": "assistant", "message": response["reply"]})
+diff --git a/backend/pipeline.py b/backend/pipeline.py
+index 28ad351..f218dfc 100644
+--- a/backend/pipeline.py
++++ b/backend/pipeline.py
+@@ -92,6 +92,36 @@ def embed(text: str) -> list[float]:
+     return _embedder.encode([text], normalize_embeddings=True)[0].tolist()
+ 
+ 
++def llm_text(messages: list[dict], temperature: float = 0.2, max_tokens: int = 1000,
++             model: str | None = None, retries: int = 1) -> str:
++    """نداء موحّد لأي completion من الـ LLM، بيتأكد إن الرد فيه نص فعلي قبل
++    ما يرجّعه. أحيانًا OpenRouter بيرجّع content=None (تعطل مؤقت من المزوّد،
++    أو رفض ضمني) — من غير الفحص ده، أي كود بيستخدم .strip() على الرد بيكسر
++    فورًا برسالة غامضة 'NoneType' object has no attribute 'strip'. هنا بنعمل
++    retry واحد تلقائي، ولو لسه فاضي بنرفع خطأ واضح بدل الكراش الصامت."""
++    _ensure_pipeline()
++    if not _llm:
++        raise RuntimeError("LLM مش متاح — تأكد من OPENROUTER_KEY في ملف .env")
++
++    last_content = None
++    for attempt in range(retries + 1):
++        response = _llm.chat.completions.create(
++            model=model or LLM_MODEL, messages=messages,
++            temperature=temperature, max_tokens=max_tokens,
++        )
++        choice = response.choices[0] if response.choices else None
++        content = choice.message.content if choice and choice.message else None
++        if content is not None and content.strip():
++            return content.strip()
++        last_content = content
++
++    raise RuntimeError(
++        "لم يرجّع نموذج الذكاء الاصطناعي ردًا نصيًا بعد إعادة المحاولة — "
++        "غالبًا تعطل مؤقت من مزوّد الـ API (OpenRouter). جرّبي تاني بعد شوية."
++        + (f" [finish_reason: {choice.finish_reason}]" if choice and last_content is None else "")
++    )
++
++
+ CRIME_CATEGORIES = {
+     "مخدرات": "قضايا حيازة أو اتجار مواد مخدرة حشيش هيروين كوكايين حبوب تخديرية",
+     "سلاح وذخيره": "قضايا حيازة أسلحة نارية ذخيرة مسدس بندقية سلاح أبيض بدون ترخيص",
+@@ -246,14 +276,10 @@ def detect_crime_type_llm(charge_text: str, case_facts: str) -> str | None:
+ أخرجي فقط اسم الفئة بالحرف تماماً كما ورد أعلاه إذا كانت تطابق الجوهر فعلياً،
+ أو "غير محدد" لو الجوهر قانون أو نشاط مختلف — بدون أي شرح إضافي."""
+ 
+-    _ensure_pipeline()
+-    if not _llm:
++    try:
++        result = llm_text([{"role": "user", "content": prompt}], temperature=0.0, max_tokens=30)
++    except RuntimeError:
+         return None
+-    response = _llm.chat.completions.create(
+-        model=LLM_MODEL, messages=[{"role": "user", "content": prompt}],
+-        temperature=0.0, max_tokens=30,
+-    )
+-    result = response.choices[0].message.content.strip()
+     return result if result in CRIME_CATEGORIES else None
+ 
+ 
+@@ -569,15 +595,8 @@ def extract_intake_from_freetext(user_text: str) -> dict:
+ نص القضية:
+ {user_text}
+ """
+-    _ensure_pipeline()
+-    if not _llm:
+-        raise RuntimeError("LLM مش متاح — تأكد من OPENROUTER_KEY في ملف .env")
+-    response = _llm.chat.completions.create(
+-        model=LLM_MODEL,
+-        messages=[{"role": "user", "content": extraction_prompt}],
+-        temperature=0.0, max_tokens=2000,
+-    )
+-    raw = response.choices[0].message.content.strip()
++    raw = llm_text([{"role": "user", "content": extraction_prompt}],
++                    temperature=0.0, max_tokens=2000)
+     raw = re.sub(r"^```json|```$", "", raw, flags=re.MULTILINE).strip()
+     try:
+         intake = json.loads(raw)
+@@ -925,31 +944,19 @@ def expand_facts_and_extract_logic(case_facts: str, retrieved_context: dict) ->
+ وقائع الدعوى:
+ [اكتب هنا وقائع الدعوى بأسلوب محامي مخضرم: هجومي، جازم، يفضح التناقضات دون أن يسأل أسئلة، ومطبّقاً فيه التوجيه الإجرائي أعلاه فقط]"""
+ 
+-    _ensure_pipeline()
+-    if not _llm:
+-        raise RuntimeError("LLM مش متاح — تأكد من OPENROUTER_KEY في ملف .env")
+-    response = _llm.chat.completions.create(
+-        model=LLM_MODEL,
+-        messages=[{"role": "user", "content": expander_prompt}],
+-        temperature=0.2, max_tokens=1000,
+-    )
+-    return response.choices[0].message.content
++    return llm_text([{"role": "user", "content": expander_prompt}],
++                     temperature=0.2, max_tokens=1000)
+ 
+ 
+ def generate_memo(case_facts: str, system_prompt: str) -> str:
+     """توليد مذكرة الدفاع عبر الـ LLM."""
+-    _ensure_pipeline()
+-    if not _llm:
+-        raise RuntimeError("LLM مش متاح — تأكد من OPENROUTER_KEY في ملف .env")
+-    response = _llm.chat.completions.create(
+-        model=LLM_MODEL,
+-        messages=[
+-            {"role": "system", "content": system_prompt},
+-            {"role": "user", "content": f"وقائع القضية:\n{case_facts.strip()}"},
+-        ],
+-        temperature=0.15, max_tokens=7000,
+-    )
+-    return response.choices[0].message.content
++    if not case_facts or not case_facts.strip():
++        raise RuntimeError("وقائع القضية وصلت فاضية لمرحلة التوليد — على الأغلب خطوة سابقة "
++                            "(تلخيص/توسيع الوقائع) فشلت في الرجوع بنص. جرّبي تاني.")
++    return llm_text([
++        {"role": "system", "content": system_prompt},
++        {"role": "user", "content": f"وقائع القضية:\n{case_facts.strip()}"},
++    ], temperature=0.15, max_tokens=7000)
+ 
+ 
+ CROSS_CONTAMINATION_TERMS = {
+@@ -1193,14 +1200,11 @@ def legal_coherence_critic(memo: str, crime_type: str | None,
+ أخرج فقط JSON: {{"issues": [{{"type": "...", "description": "...", "severity": "high|medium"}}]}}
+ إن لم تجد مشكلة: {{"issues": []}}"""
+ 
+-    _ensure_pipeline()
+-    if not _llm:
+-        return {"issues": [], "parse_error": "LLM مش متاح"}
+-    response = _llm.chat.completions.create(
+-        model=LLM_MODEL, messages=[{"role": "user", "content": critic_prompt}],
+-        temperature=0.0, max_tokens=800,
+-    )
+-    raw = response.choices[0].message.content.strip()
++    try:
++        raw = llm_text([{"role": "user", "content": critic_prompt}],
++                        temperature=0.0, max_tokens=800)
++    except RuntimeError as e:
++        return {"issues": [], "parse_error": str(e)}
+     raw = re.sub(r"^```json|```$", "", raw, flags=re.MULTILINE).strip()
+     try:
+         return json.loads(raw)
+diff --git a/src/components/Workspace.tsx b/src/components/Workspace.tsx
+index acb3c62..2e674ce 100644
+--- a/src/components/Workspace.tsx
++++ b/src/components/Workspace.tsx
+@@ -93,6 +93,9 @@ export function Workspace() {
+   const [memoJobId, setMemoJobId] = useState<string | null>(null);
+   const [contractData, setContractData] = useState<ContractResult | null>(null);
+   const [contractJobId, setContractJobId] = useState<string | null>(null);
++  // لو مش null، يبقى احنا بنكمل جلسة موجودة — استخدمي نفس الـ id بدل ما
++  // نعمل session جديدة كل مرة (وده اللي كان بيسبب التكرار في السايدبار)
++  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+ 
+   const chat = useSessionChat();
+   const memory = useMemory();
+@@ -113,11 +116,14 @@ export function Workspace() {
+       setMemoData(memoResult);
+       if (jobId) setMemoJobId(jobId);
+ 
+-      // احفظ الجلسة في localStorage بمعرّف فريد لكل توليدة
++      // احفظ الجلسة — لو دي إعادة فتح جلسة قايمة استخدمي نفس الـ id
++      // (upsert)، ولو جلسة جديدة اعملي id جديد واحد بس واحفظيه في الـ state
+       if (memoResult.sections && memoResult.sections.length > 0) {
+         const info = extractMemoInfo(memoResult, initialPrompt);
++        const id = currentSessionId ?? `memo-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
++        if (!currentSessionId) setCurrentSessionId(id);
+         saveSession({
+-          id: `memo-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
++          id,
+           title: info.title,
+           kind: 'memo',
+           meta: info.preview,
+@@ -127,6 +133,7 @@ export function Workspace() {
+           jobId: jobId || null,
+           screenId: 'memo',
+           pinned: false,
++          data: memoResult,
+         });
+       }
+     }
+@@ -136,11 +143,13 @@ export function Workspace() {
+       setContractData(contractResult);
+       if (jobId) setContractJobId(jobId);
+ 
+-      // احفظ الجلسة بمعرّف فريد
++      // نفس منطق الـ upsert بتاع المذكرات
+       if (contractResult.clauses && contractResult.clauses.length > 0) {
+         const info = extractContractInfo(contractResult, initialPrompt);
++        const id = currentSessionId ?? `contract-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
++        if (!currentSessionId) setCurrentSessionId(id);
+         saveSession({
+-          id: `contract-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
++          id,
+           title: info.title,
+           kind: 'contract-gen',
+           meta: info.preview,
+@@ -150,6 +159,7 @@ export function Workspace() {
+           jobId: jobId || null,
+           screenId: 'contract-gen',
+           pinned: false,
++          data: contractResult,
+         });
+       }
+     }
+@@ -162,8 +172,10 @@ export function Workspace() {
+         consultation: 'استشارة قانونية',
+       };
+       const previewText = initialPrompt.length > 50 ? initialPrompt.slice(0, 50) + '...' : initialPrompt;
++      const id = currentSessionId ?? `${artifactKind}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
++      if (!currentSessionId) setCurrentSessionId(id);
+       saveSession({
+-        id: `${artifactKind}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
++        id,
+         title: `${kindLabel[artifactKind] || artifactKind}`,
+         kind: artifactToChatKind(artifactKind),
+         meta: previewText,
+@@ -238,6 +250,7 @@ export function Workspace() {
+     setMemoJobId(null);
+     setContractData(null);
+     setContractJobId(null);
++    setCurrentSessionId(null);
+   }, [chat, memory]);
+ 
+   /* ── Expose new chat for shell ── */
+@@ -255,9 +268,6 @@ export function Workspace() {
+ 
+   /* ── Open an existing session from sidebar/history ── */
+   const handleOpenSession = useCallback((session: SessionCard) => {
+-    // ابدأ جلسة جديدة مع الـ prompt القديم
+-    handleNewSession();
+-
+     const kindMap: Partial<Record<string, ArtifactType>> = {
+       'contract-gen': 'contract',
+       review: 'review',
+@@ -265,11 +275,37 @@ export function Workspace() {
+       research: 'research',
+     };
+     const kind = kindMap[session.screenId];
+-    if (kind) {
++    if (!kind) return;
++
++    // لو النتيجة الكاملة متخزنة في الجلسة، اعرضيها فورًا من غير أي
++    // API call — ده اللي بيحل مشكلة الـ regenerate + التكرار في السايدبار
++    if (session.data) {
++      chat.reset();
++      memory.clear();
++      setCurrentSessionId(session.id);
+       setInitialPrompt(session.prompt);
+-      startThinking(kind as TaskKind, session.prompt);
++
++      if (kind === 'memo') {
++        setMemoData(session.data as MemoResult);
++        setMemoJobId(session.jobId ?? null);
++      } else if (kind === 'contract') {
++        setContractData(session.data as ContractResult);
++        setContractJobId(session.jobId ?? null);
++      }
++
++      setActiveKind(kind);
++      setPhase('artifact');
++      setArtifactKey((k) => k + 1);
++      return;
+     }
+-  }, [handleNewSession, startThinking]);
++
++    // fallback لجلسات قديمة اتحفظت قبل هذا الإصلاح ومفيهاش data محفوظة —
++    // اضطراريًا لازم regenerate، بس بنفس الـ id عشان منكررش الجلسة
++    handleNewSession();
++    setCurrentSessionId(session.id);
++    setInitialPrompt(session.prompt);
++    startThinking(kind as TaskKind, session.prompt);
++  }, [handleNewSession, startThinking, chat, memory]);
+ 
+   /* ── Expose openSession for shell ── */
+   useEffect(() => {
+diff --git a/src/lib/sessionStore.ts b/src/lib/sessionStore.ts
+index 7e51e0b..cbdbf15 100644
+--- a/src/lib/sessionStore.ts
++++ b/src/lib/sessionStore.ts
+@@ -22,12 +22,15 @@ export interface SessionCard {
+   updatedAt: number;         // timestamp
+   pinned: boolean;
+ 
+-  /* ── البيانات الفعلية (خفيفة للـ localStorage) ── */
+-  /* البيانات الثقيلة (المذكرة/العقد الكامل) محفوظة في ملف منفصل أو
+-     يمكن إعادة توليدها من الـ prompt + jobId */
++  /* ── البيانات الفعلية ── */
+   prompt: string;            // الـ prompt الأصلي
+-  jobId: string | null;      // job ID من الباك (لو موجود)
++  jobId: string | null;      // job ID من الباك (بيموت مع أي restart — مفيش DB)
+   screenId: string;          // screen لتفتحها: 'memo' | 'contract-gen' | 'review' | 'research'
++
++  /* النتيجة الكاملة — لازم تتخزن هنا لأن مفيش backend DB، فـ localStorage
++     هو المصدر الوحيد. لو موجودة، فتح الجلسة يعرضها مباشرة من غير أي
++     regenerate. */
++  data?: unknown;
+ }
+ 
+ /* ═══ Constants ═══ */

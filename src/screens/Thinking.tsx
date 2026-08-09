@@ -133,7 +133,7 @@ function pickRandom(pool: string[], n: number, exclude: Set<string>): string[] {
 type ThinkingProps = {
   task: TaskType;
   prompt: string;
-  onComplete: (result: MemoResult | ContractResult, jobId: string) => void;
+  onComplete: (result: MemoResult | ContractResult, jobId: string, dbSessionId: string | null) => void;
   onError?: (message: string) => void;
 };
 
@@ -234,7 +234,7 @@ export function Thinking({ task, prompt, onComplete, onError }: ThinkingProps) {
       schedule(() => {
         if (completedRef.current) return;
         completedRef.current = true;
-        onComplete({ sections: [], case_metadata: {}, memo: '' }, '');
+        onComplete({ sections: [], case_metadata: {}, memo: '' }, '', null);
       }, 3200);
       return () => clearTimers();
     }
@@ -244,7 +244,7 @@ export function Thinking({ task, prompt, onComplete, onError }: ThinkingProps) {
     (async () => {
       try {
         const req: GenerateMemoRequest = { raw_text: prompt };
-        const { job_id } = await createMemoJob(req);
+        const { job_id, db_session_id } = await createMemoJob(req);
         abortController = new AbortController();
         const result = await pollMemoJob(
           job_id,
@@ -262,7 +262,7 @@ export function Thinking({ task, prompt, onComplete, onError }: ThinkingProps) {
         schedule(() => {
           if (!completedRef.current) {
             completedRef.current = true;
-            onComplete(result.result ?? { sections: [], case_metadata: {}, memo: '' }, job_id);
+            onComplete(result.result ?? { sections: [], case_metadata: {}, memo: '' }, job_id, db_session_id);
           }
         }, FADE_MS + 100 + READY_HOLD);
       } catch (err) {
@@ -286,7 +286,7 @@ export function Thinking({ task, prompt, onComplete, onError }: ThinkingProps) {
     // Contract: fire the job, poll, then complete.
     (async () => {
       try {
-        const { job_id } = await createContractJob(prompt);
+        const { job_id, db_session_id } = await createContractJob(prompt);
         abortController = new AbortController();
         const result = await pollContractJob(
           job_id,
@@ -304,7 +304,7 @@ export function Thinking({ task, prompt, onComplete, onError }: ThinkingProps) {
         schedule(() => {
           if (!completedRef.current) {
             completedRef.current = true;
-            onComplete(result.result ?? { contract_text: '', preamble: '', closing: '', clauses: [], contract_type_key: null, contract_type_ar: '', clause_validation: null, docx_path: null }, job_id);
+            onComplete(result.result ?? { contract_text: '', preamble: '', closing: '', clauses: [], contract_type_key: null, contract_type_ar: '', clause_validation: null, docx_path: null }, job_id, db_session_id);
           }
         }, FADE_MS + 100 + READY_HOLD);
       } catch (err) {

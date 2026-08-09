@@ -104,9 +104,9 @@ async function http<T>(path: string, init?: RequestInit): Promise<T> {
    Memo endpoints
    ════════════════════════════════════════════════ */
 
-export async function createMemoJob(req: GenerateMemoRequest): Promise<{ job_id: string; status: 'queued' }> {
-  if (!BASE_URL) return mockCreateMemoJob();
-  return http<{ job_id: string; status: 'queued' }>('/api/memo/generate', {
+export async function createMemoJob(req: GenerateMemoRequest): Promise<{ job_id: string; status: 'queued'; db_session_id: string | null }> {
+  if (!BASE_URL) return { ...(await mockCreateMemoJob()), db_session_id: null };
+  return http<{ job_id: string; status: 'queued'; db_session_id: string | null }>('/api/memo/generate', {
     method: 'POST',
     body: JSON.stringify(req),
   });
@@ -180,9 +180,9 @@ export type ContractChatResponse = {
    Contract endpoints
    ════════════════════════════════════════════════ */
 
-export async function createContractJob(query: string): Promise<{ job_id: string; status: 'queued' }> {
+export async function createContractJob(query: string): Promise<{ job_id: string; status: 'queued'; db_session_id: string | null }> {
   if (!BASE_URL) throw new Error('No API base URL');
-  return http<{ job_id: string; status: 'queued' }>('/api/contract/generate', {
+  return http<{ job_id: string; status: 'queued'; db_session_id: string | null }>('/api/contract/generate', {
     method: 'POST',
     body: JSON.stringify({ query }),
   });

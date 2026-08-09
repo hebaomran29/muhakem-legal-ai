@@ -1,0 +1,291 @@
+diff --git a/backend/main.py b/backend/main.py
+index 1a8c9f6..1ffcfdb 100644
+--- a/backend/main.py
++++ b/backend/main.py
+@@ -29,12 +29,15 @@ from datetime import datetime, timezone
+ from contextlib import redirect_stdout
+ from typing import Optional
+ 
+-from fastapi import FastAPI, HTTPException
++from fastapi import FastAPI, HTTPException, Depends, Header
+ from fastapi.middleware.cors import CORSMiddleware
+ from fastapi.responses import FileResponse
+ from pydantic import BaseModel
+ 
+ import pipeline  # نفس ملف الـ pipeline من غير أي تعديل منطقي
++from db import repo
++from db import client as db_client
++from auth import CurrentUser, get_current_user, try_get_current_user, require_session_access
+ 
+ # ── استيراد pipeline العقود ──────────────────────────────────────────────────
+ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "contracts"))
+@@ -270,6 +273,19 @@ def _run_job(job_id: str):
+                 "case_facts": case_facts,
+                 "sources": result.get("sources", {}),
+             }
++
++        # ── حفظ دائم في الداتابيز (best-effort — لو فشل، الجلسة الحالية
++        #    فضلت شغالة عادي زي الأول، بس مش هتلاقيها لو رجعتي تاني) ──
++        db_session_id = job.get("db_session_id")
++        if db_session_id:
++            try:
++                repo.save_memo_result(
++                    db_session_id, sections, case_metadata,
++                    result.get("sources", {}), final_memo,
++                )
++                repo.touch_session(db_session_id)
++            except Exception as e:
++                print(f"⚠️ فشل حفظ نتيجة المذكرة في الداتابيز: {e}")
+     except Exception as e:
+         with _jobs_lock:
+             job["status"] = JobStatus.FAILED
+@@ -680,6 +696,7 @@ class GenerateMemoRequest(BaseModel):
+ class JobResponse(BaseModel):
+     job_id: str
+     status: str
++    db_session_id: Optional[str] = None
+ 
+ 
+ class JobStatusResponse(BaseModel):
+@@ -711,13 +728,28 @@ def health():
+ 
+ 
+ @app.post("/api/memo/generate", response_model=JobResponse)
+-def generate_memo(payload: GenerateMemoRequest):
++def generate_memo(payload: GenerateMemoRequest, user: "CurrentUser | None" = Depends(try_get_current_user)):
+     """بيبدأ job (استرجاع → توليد → تحقق → تصحيح، من دقيقة لـ3 دقايق) ويرجع
+     job_id على طول. اعملي polling على GET /api/memo/{job_id} لحد ما status
+-    يبقى completed — ده اللي بيغذي شاشة اللودينج."""
++    يبقى completed — ده اللي بيغذي شاشة اللودينج.
++
++    لو المستخدم مسجّل دخول (user مش None) وفيه داتابيز متوصّلة، بتتعمل
++    session دائمة في الـ DB من الأول، والنتيجة بتتحفظ فيها لما التوليد يخلص
++    (شوفي _run_job) — يعني تقدري ترجعي للمذكرة دي بعدين من أي جهاز."""
+     if not payload.raw_text or not payload.raw_text.strip():
+         raise HTTPException(status_code=400, detail="raw_text فاضي")
+ 
++    db_session_id = None
++    if user:
++        try:
++            session_row = repo.create_session(
++                user.firm_id, user.user_id, "memo",
++                title=payload.raw_text.strip()[:60], prompt=payload.raw_text,
++            )
++            db_session_id = str(session_row["id"])
++        except Exception as e:
++            print(f"⚠️ فشل حفظ الجلسة في الداتابيز (هتكمل من غير حفظ دائم): {e}")
++
+     job_id = str(uuid.uuid4())
+     with _jobs_lock:
+         _jobs[job_id] = {
+@@ -731,9 +763,10 @@ def generate_memo(payload: GenerateMemoRequest):
+             "error": None,
+             "chat_history": [],
+             "created_at": datetime.now(timezone.utc).isoformat(),
++            "db_session_id": db_session_id,
+         }
+     _work_queue.put(job_id)
+-    return JobResponse(job_id=job_id, status=JobStatus.QUEUED)
++    return JobResponse(job_id=job_id, status=JobStatus.QUEUED, db_session_id=db_session_id)
+ 
+ 
+ @app.get("/api/memo/{job_id}", response_model=JobStatusResponse)
+@@ -803,6 +836,23 @@ def chat_edit(payload: ChatEditRequest):
+         job["chat_history"].append({"role": "user", "message": payload.message})
+         job["chat_history"].append({"role": "assistant", "message": response["reply"]})
+ 
++    db_session_id = job.get("db_session_id")
++    if db_session_id:
++        try:
++            repo.append_chat_message(db_session_id, "user", payload.message)
++            repo.append_chat_message(db_session_id, "assistant", response["reply"],
++                                      change_card=response.get("change_card"))
++            # لو التعديل فعلاً غيّر الأقسام، خزّني النسخة المحدّثة كمان
++            if response.get("updated_sections") is not None:
++                result = job["result"]
++                repo.save_memo_result(
++                    db_session_id, result["sections"], result["case_metadata"],
++                    result.get("sources", {}), result["memo"],
++                )
++            repo.touch_session(db_session_id)
++        except Exception as e:
++            print(f"⚠️ فشل حفظ رسائل الشات في الداتابيز: {e}")
++
+     return response
+ 
+ 
+@@ -935,6 +985,16 @@ def _run_contract_job(job_id: str):
+                 "clause_validation": result.get("clause_validation", {}),
+                 "docx_path": result.get("docx_path"),
+             }
++
++        db_session_id = job.get("db_session_id")
++        if db_session_id:
++            try:
++                repo.save_contract_result(
++                    db_session_id, clauses, job["result"]["contract_type_ar"],
++                )
++                repo.touch_session(db_session_id)
++            except Exception as e:
++                print(f"⚠️ فشل حفظ نتيجة العقد في الداتابيز: {e}")
+     except Exception as e:
+         with _contract_jobs_lock:
+             job["status"] = JobStatus.FAILED
+@@ -1146,11 +1206,22 @@ class ContractChatEditRequest(BaseModel):
+ # ── Contract Endpoints ──────────────────────────────────────────────────────
+ 
+ @app.post("/api/contract/generate", response_model=JobResponse)
+-def generate_contract_endpoint(payload: GenerateContractRequest):
++def generate_contract_endpoint(payload: GenerateContractRequest, user: "CurrentUser | None" = Depends(try_get_current_user)):
+     """يبدأ توليد عقد ويرجع job_id — الفرونت يعمل polling."""
+     if not payload.query or not payload.query.strip():
+         raise HTTPException(status_code=400, detail="query فاضي")
+ 
++    db_session_id = None
++    if user:
++        try:
++            session_row = repo.create_session(
++                user.firm_id, user.user_id, "contract",
++                title=payload.query.strip()[:60], prompt=payload.query,
++            )
++            db_session_id = str(session_row["id"])
++        except Exception as e:
++            print(f"⚠️ فشل حفظ الجلسة في الداتابيز (هتكمل من غير حفظ دائم): {e}")
++
+     job_id = str(uuid.uuid4())
+     with _contract_jobs_lock:
+         _contract_jobs[job_id] = {
+@@ -1164,9 +1235,10 @@ def generate_contract_endpoint(payload: GenerateContractRequest):
+             "error": None,
+             "chat_history": [],
+             "created_at": datetime.now(timezone.utc).isoformat(),
++            "db_session_id": db_session_id,
+         }
+     _contract_work_queue.put(job_id)
+-    return JobResponse(job_id=job_id, status=JobStatus.QUEUED)
++    return JobResponse(job_id=job_id, status=JobStatus.QUEUED, db_session_id=db_session_id)
+ 
+ 
+ @app.get("/api/contract/{job_id}", response_model=JobStatusResponse)
+@@ -1206,6 +1278,19 @@ def contract_chat_edit(payload: ContractChatEditRequest):
+         job["chat_history"].append({"role": "user", "message": payload.message})
+         job["chat_history"].append({"role": "assistant", "message": response["reply"]})
+ 
++    db_session_id = job.get("db_session_id")
++    if db_session_id:
++        try:
++            repo.append_chat_message(db_session_id, "user", payload.message)
++            repo.append_chat_message(db_session_id, "assistant", response["reply"],
++                                      change_card=response.get("change_card"))
++            if response.get("updated_clauses") is not None:
++                result = job["result"]
++                repo.save_contract_result(db_session_id, result["clauses"], result.get("contract_type_ar"))
++            repo.touch_session(db_session_id)
++        except Exception as e:
++            print(f"⚠️ فشل حفظ رسائل شات العقد في الداتابيز: {e}")
++
+     return response
+ 
+ 
+@@ -1244,3 +1329,85 @@ def download_contract_docx(job_id: str):
+         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+         filename=filename,
+     )
++
++
++# ═══════════════════════════════════════════════════════════════════════════
++# ── Firms & Sessions (الداتابيز الدائمة) ────────────────────────────────
++# مطلوب Authorization: Bearer <supabase_access_token> على كل الـ endpoints دي
++# ═══════════════════════════════════════════════════════════════════════════
++
++class CreateFirmRequest(BaseModel):
++    name: str
++
++
++@app.post("/api/firms")
++def create_firm(payload: CreateFirmRequest, user: CurrentUser = Depends(get_current_user)):
++    """أول مرة يسجّل فيها المستخدم دخول ومعندوش مكتب — بينشئله مكتب جديد
++    وهو الـ owner بتاعه. لو عنده مكتب بالفعل، استخدمي /api/firms/invite
++    بدل ما تعملي واحد جديد."""
++    if user.firm_ids:
++        raise HTTPException(status_code=409, detail="المستخدم عضو في مكتب بالفعل")
++    firm = repo.create_firm_with_owner(payload.name.strip() or "مكتبي", user.user_id)
++    return firm
++
++
++class InviteMemberRequest(BaseModel):
++    email: str
++
++
++@app.post("/api/firms/invite")
++def invite_member(payload: InviteMemberRequest, user: CurrentUser = Depends(get_current_user)):
++    """بتضيف محامية تانية (لازم تكون عملت حساب على Supabase Auth بالفعل
++    بنفس الإيميل ده) لنفس مكتب المستخدم الحالي."""
++    found_user = db_client.auth_admin_get_user_by_email(payload.email.strip().lower())
++    if not found_user:
++        raise HTTPException(status_code=404, detail="مفيش حساب مسجّل بالإيميل ده")
++    repo.add_member_to_firm(user.firm_id, found_user["id"])
++    return {"success": True}
++
++
++@app.get("/api/sessions")
++def list_sessions_endpoint(user: CurrentUser = Depends(get_current_user)):
++    """كل جلسات مكتب المستخدم (مذكرات وعقود واستشارات...) — بتغذي الـ Sidebar
++    بدل localStorage."""
++    return {"sessions": repo.list_sessions(user.firm_id)}
++
++
++@app.get("/api/sessions/{session_id}")
++def get_session_endpoint(session_id: str, user: CurrentUser = Depends(get_current_user)):
++    """تفاصيل جلسة واحدة كاملة: بياناتها + النتيجة (مذكرة أو عقد) + كل
++    تاريخ الشات — عشان تقدري تفتحيها وتكمّلي التعديل عليها بالشات."""
++    require_session_access(session_id, user)
++    session = repo.get_session(session_id)
++    if session is None:
++        raise HTTPException(status_code=404, detail="الجلسة دي مش موجودة")
++
++    result = None
++    if session["type"] == "memo":
++        result = repo.get_memo_result(session_id)
++    elif session["type"] == "contract":
++        result = repo.get_contract_result(session_id)
++
++    return {
++        "session": session,
++        "result": result,
++        "chat_history": repo.get_chat_history(session_id),
++    }
++
++
++@app.delete("/api/sessions/{session_id}")
++def delete_session_endpoint(session_id: str, user: CurrentUser = Depends(get_current_user)):
++    require_session_access(session_id, user)
++    repo.delete_session(session_id)
++    return {"success": True}
++
++
++class PinSessionRequest(BaseModel):
++    pinned: bool
++
++
++@app.post("/api/sessions/{session_id}/pin")
++def pin_session_endpoint(session_id: str, payload: PinSessionRequest, user: CurrentUser = Depends(get_current_user)):
++    require_session_access(session_id, user)
++    repo.set_pinned(session_id, payload.pinned)
++    return {"success": True}
+diff --git a/backend/requirements.txt b/backend/requirements.txt
+index d04c44c..bf91575 100644
+--- a/backend/requirements.txt
++++ b/backend/requirements.txt
+@@ -9,4 +9,8 @@ sentence-transformers==3.3.1
+ numpy==2.2.1
+ python-dotenv==1.0.1
+ pypdf
+-python-docx
+\ No newline at end of file
++python-docx
++psycopg2-binary==2.9.10
++PyJWT==2.10.1
++cryptography==44.0.0
++requests==2.32.3
+\ No newline at end of file
