@@ -13,29 +13,6 @@ export default function App() {
   const { loading, user, needsFirm, signOut } = useAuth();
   const [overlayScreen, setOverlayScreen] = useState<ScreenId | null>(null);
 
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center text-neutral-400">
-        ...جاري التحميل
-      </div>
-    );
-  }
-
-  if (!user || needsFirm) {
-    return <Login />;
-  }
-
-  useEffect(() => {
-    const onNavigate = (e: Event) => {
-      const detail = (e as CustomEvent<ScreenId>).detail;
-      if (detail === 'history') {
-        setOverlayScreen(detail);
-      }
-    };
-    window.addEventListener('muhakem-navigate', onNavigate);
-    return () => window.removeEventListener('muhakem-navigate', onNavigate);
-  }, []);
-
   const handleNavigate = useCallback((s: ScreenId) => {
     if (s === 'history') {
       setOverlayScreen(s);
@@ -60,6 +37,17 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    const onNavigate = (e: Event) => {
+      const detail = (e as CustomEvent<ScreenId>).detail;
+      if (detail === 'history') {
+        setOverlayScreen(detail);
+      }
+    };
+    window.addEventListener('muhakem-navigate', onNavigate);
+    return () => window.removeEventListener('muhakem-navigate', onNavigate);
+  }, []);
+
+  useEffect(() => {
     const onOpenSession = (e: Event) => {
       const session = (e as CustomEvent<SessionCard>).detail;
       handleOpenSession(session);
@@ -67,8 +55,6 @@ export default function App() {
     window.addEventListener('muhakem-open-session', onOpenSession);
     return () => window.removeEventListener('muhakem-open-session', onOpenSession);
   }, [handleOpenSession]);
-
-  const currentScreen: ScreenId = overlayScreen ?? 'landing';
 
   useEffect(() => {
     const onScreenChange = (e: Event) => {
@@ -78,6 +64,20 @@ export default function App() {
     window.addEventListener('muhakem-screen-change', onScreenChange);
     return () => window.removeEventListener('muhakem-screen-change', onScreenChange);
   }, []);
+
+  const currentScreen: ScreenId = overlayScreen ?? 'landing';
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center text-neutral-400">
+        ...جاري التحميل
+      </div>
+    );
+  }
+
+  if (!user || needsFirm) {
+    return <Login />;
+  }
 
   if (overlayScreen === 'history') {
     return (

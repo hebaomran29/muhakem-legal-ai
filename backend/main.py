@@ -36,7 +36,7 @@ from pydantic import BaseModel
 
 import pipeline  # نفس ملف الـ pipeline من غير أي تعديل منطقي
 from db import repo
-from db.client import get_cursor as repo_client_cursor
+from db import client as db_client
 from auth import CurrentUser, get_current_user, try_get_current_user, require_session_access
 
 # ── استيراد pipeline العقود ──────────────────────────────────────────────────
@@ -1359,12 +1359,10 @@ class InviteMemberRequest(BaseModel):
 def invite_member(payload: InviteMemberRequest, user: CurrentUser = Depends(get_current_user)):
     """بتضيف محامية تانية (لازم تكون عملت حساب على Supabase Auth بالفعل
     بنفس الإيميل ده) لنفس مكتب المستخدم الحالي."""
-    with repo_client_cursor() as cur:
-        cur.execute("select id from auth.users where email = %s", (payload.email.strip().lower(),))
-        row = cur.fetchone()
-    if not row:
+    found_user = db_client.auth_admin_get_user_by_email(payload.email.strip().lower())
+    if not found_user:
         raise HTTPException(status_code=404, detail="مفيش حساب مسجّل بالإيميل ده")
-    repo.add_member_to_firm(user.firm_id, str(row["id"]))
+    repo.add_member_to_firm(user.firm_id, found_user["id"])
     return {"success": True}
 
 
