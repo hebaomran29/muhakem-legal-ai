@@ -15,13 +15,13 @@ from docx.shared import Pt, Inches, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from dotenv import load_dotenv
 
-load_dotenv()  # بيقرأ ملف .env من نفس مجلد المشروع (لازم يكون فيه QDRANT_URL و QDRANT_KEY)
+load_dotenv()  # بيقرأ ملف .env من نفس مجلد المشروع (لازم يكون فيه QDRANT_URL و QDRANT_API_KEY)
 
 # ──────────────────────────────────────────────────────────────────
 # إعدادات الاتصال والمسارات
 # ──────────────────────────────────────────────────────────────────
 QDRANT_URL = os.environ.get("QDRANT_URL")
-QDRANT_KEY = os.environ.get("QDRANT_KEY")
+QDRANT_KEY = os.environ.get("QDRANT_API_KEY")  # نفس اسم المتغير المستخدم في pipeline.py و .env.example
 
 OLLAMA_MODEL = "qwen3:14b"
 OLLAMA_BASE_URL = "http://localhost:11434/v1"
@@ -105,7 +105,7 @@ def load_rag_resources() -> dict:
     }
 
     if not QDRANT_URL or not QDRANT_KEY:
-        print("❌ QDRANT_URL أو QDRANT_KEY مش متعرّفين — تأكدي من ملف .env")
+        print("❌ QDRANT_URL أو QDRANT_API_KEY مش متعرّفين — تأكدي من ملف .env")
         return resources
 
     try:
