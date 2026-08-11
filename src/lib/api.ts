@@ -465,6 +465,15 @@ export async function getRemoteSession(id: string): Promise<{
   return http(`/api/sessions/${id}`);
 }
 
+export async function resumeMemoSession(sessionId: string): Promise<{
+  job_id: string;
+  status: 'completed';
+  db_session_id: string | null;
+  chat_history: RemoteChatMessage[];
+}> {
+  return http(`/api/memo/${sessionId}/resume`, { method: 'POST' });
+}
+
 export async function deleteRemoteSession(id: string): Promise<void> {
   await http(`/api/sessions/${id}`, { method: 'DELETE' });
 }

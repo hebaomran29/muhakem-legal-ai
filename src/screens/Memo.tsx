@@ -31,6 +31,7 @@ export function Memo({
   embedded = false,
   chatProps,
   onSwitchTask,
+  initialChatMessages,
 }: {
   initialPrompt?: string;
   memoData?: MemoResult | null;
@@ -38,6 +39,7 @@ export function Memo({
   embedded?: boolean;
   chatProps?: ChatProps;
   onSwitchTask?: (signal: SwitchTaskSignal) => void;
+  initialChatMessages?: MemoChatMessage[];
 }) {
   const [editing, setEditing] = useState(false);
   const [active, setActive] = useState('waqai');
@@ -69,7 +71,7 @@ export function Memo({
   const lawyerName = meta?.lawyer_name ?? null;
   const lawyerLicense = meta?.lawyer_license ?? null;
 
-  const memoChat = useMemoChat(jobId ?? null, handleSectionsUpdate, onSwitchTask);
+  const memoChat = useMemoChat(jobId ?? null, handleSectionsUpdate, onSwitchTask, initialChatMessages);
   const { context, setContextLabel, clearContext } = memoChat;
 
   useEffect(() => {

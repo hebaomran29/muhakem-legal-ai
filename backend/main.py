@@ -856,6 +856,89 @@ def chat_edit(payload: ChatEditRequest):
     return response
 
 
+class ResumeResponse(BaseModel):
+    job_id: str
+    status: str
+    db_session_id: Optional[str] = None
+    chat_history: list[dict] = []
+
+
+@app.post("/api/memo/{session_id}/resume", response_model=ResumeResponse)
+def resume_memo(session_id: str, user: CurrentUser = Depends(get_current_user)):
+    """بتفعّل جلسة مذكرة قديمة (اتقفلت الصفحة أو السيرفر عمل ريستارت) عشان
+    الشات يقدر يكمل عليها — بتبني _jobs entry جديدة من النتيجة المحفوظة في
+    memo_results + تاريخ الشات من chat_messages، وترجع job_id جديد تستخدمه
+    الفرونت في /api/memo/chat و/api/memo/{job_id}/save زي أي جلسة عادية
+    (بديل عن setMemoJobId(null) اللي كانت بتمنع أي تعديل بعد إعادة فتح الجلسة)."""
+    require_session_access(session_id, user)
+    session = repo.get_session(session_id)
+    if session is None or session.get("type") != "memo":
+        raise HTTPException(status_code=404, detail="جلسة مذكرة مش موجودة")
+
+    memo_result = repo.get_memo_result(session_id)
+    if memo_result is None:
+        raise HTTPException(status_code=409, detail="مفيش نتيجة محفوظة للمذكرة دي لسه")
+
+    memo_text = memo_result.get("memo_text") or ""
+    header, split_sections = split_memo_into_sections(memo_text)
+    # الأقسام المحفوظة (ممكن تكون اتعدلت يدوي أو بالشات) بتتفضّل على الـ
+    # split التلقائي — لكن الـ header مش متخزن لوحده في الداتابيز فلازم من
+    # الـ split دايماً
+    sections = memo_result.get("sections") or split_sections
+    case_metadata = memo_result.get("case_metadata") or {}
+
+    # case_facts الكامل (بالوقائع/الأقوال التفصيلية) مش متخزن في الداتابيز —
+    # بنبني نسخة مختصرة منه من case_metadata عشان فحوصات run_legal_checks
+    # (زي check_crime_type_contamination) تفضل شغالة على أي تعديل شات بعد
+    # الاستئناف، حتى من غير نفس التفاصيل السردية الكاملة اللي كانت موجودة
+    # وقت التوليد الأول
+    case_facts_lite = "\n".join(
+        f"{label}: {case_metadata.get(key) or '[غير محدد]'}"
+        for label, key in (
+            ("اسم المتهم", "defendant_name"),
+            ("نوع الجريمة", "charge"),
+            ("رقم القضية", "case_number"),
+            ("المحكمة", "court"),
+        )
+    )
+
+    db_chat_history = repo.get_chat_history(session_id)
+
+    job_id = str(uuid.uuid4())
+    with _jobs_lock:
+        _jobs[job_id] = {
+            "status": JobStatus.COMPLETED,
+            "progress": 1.0,
+            "stage": None,
+            "logs": [],
+            "last_log": None,
+            "input": {"raw_text": session.get("prompt") or ""},
+            "result": {
+                "memo": memo_text,
+                "header": header,
+                "sections": sections,
+                "case_metadata": case_metadata,
+                "crime_type": case_metadata.get("crime_type"),
+                "legal_nature": case_metadata.get("legal_nature"),
+                "correction_rounds": None,
+                "validation": None,
+                "case_facts": case_facts_lite,
+                "sources": memo_result.get("sources") or {},
+            },
+            "error": None,
+            "chat_history": [
+                {"role": m["role"], "message": m["text"]} for m in db_chat_history
+            ],
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "db_session_id": session_id,
+        }
+
+    return ResumeResponse(
+        job_id=job_id, status=JobStatus.COMPLETED,
+        db_session_id=session_id, chat_history=db_chat_history,
+    )
+
+
 # ════════════════════════════════════════════════════════════════════
 # نظام إنشاء العقود — نفس نمط المذكرات (job queue + polling + chat)
 # ════════════════════════════════════════════════════════════════════

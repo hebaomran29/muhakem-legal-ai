@@ -11,8 +11,9 @@ import { useMemory } from '../lib/memory';
 import { routeMessage } from '../lib/router';
 import { saveSession, syncFromRemote, type SessionCard } from '../lib/sessionStore';
 import type { ScreenId, TaskType, ChatKind } from '../lib/types';
-import type { MemoResult, ContractResult, SwitchTaskSignal } from '../lib/api';
-import { getRemoteSession } from '../lib/api';
+import type { MemoResult, ContractResult, SwitchTaskSignal, RemoteChatMessage } from '../lib/api';
+import { getRemoteSession, resumeMemoSession } from '../lib/api';
+import type { MemoChatMessage } from '../lib/useMemoChat';
 import { getAccessToken } from '../lib/auth';
 import { cn } from '../lib/cn';
 
@@ -46,6 +47,16 @@ function artifactToChatKind(art: ArtifactType): ChatKind {
     consultation: 'research',
   };
   return map[art];
+}
+
+/** يحوّل تاريخ الشات المحفوظ في الداتابيز لشكل MemoChatMessage اللي useMemoChat بيتوقعه */
+function toMemoChatMessages(history: RemoteChatMessage[]): MemoChatMessage[] {
+  return history.map((m) => ({
+    id: m.id,
+    role: m.role,
+    text: m.text,
+    changeCard: (m.change_card ?? undefined) as MemoChatMessage['changeCard'],
+  }));
 }
 
 /** يستخرج عنوان ووصف من نتيجة المذكرة */
@@ -95,6 +106,7 @@ export function Workspace() {
   const [memoJobId, setMemoJobId] = useState<string | null>(null);
   const [contractData, setContractData] = useState<ContractResult | null>(null);
   const [contractJobId, setContractJobId] = useState<string | null>(null);
+  const [memoInitialChatMessages, setMemoInitialChatMessages] = useState<MemoChatMessage[] | undefined>(undefined);
   // لو مش null، يبقى احنا بنكمل جلسة موجودة — استخدمي نفس الـ id بدل ما
   // نعمل session جديدة كل مرة (وده اللي كان بيسبب التكرار في السايدبار)
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
@@ -260,6 +272,7 @@ export function Workspace() {
     setInitialPrompt('');
     setMemoData(null);
     setMemoJobId(null);
+    setMemoInitialChatMessages(undefined);
     setContractData(null);
     setContractJobId(null);
     setCurrentSessionId(null);
@@ -309,6 +322,7 @@ export function Workspace() {
       if (kind === 'memo') {
         setMemoData(session.data as MemoResult);
         setMemoJobId(session.jobId ?? null);
+        setMemoInitialChatMessages(undefined);
       } else if (kind === 'contract') {
         setContractData(session.data as ContractResult);
         setContractJobId(session.jobId ?? null);
@@ -324,7 +338,7 @@ export function Workspace() {
     // من /api/sessions/{id} بدل ما نعمل regenerate كامل من الصفر
     if (getAccessToken() && (kind === 'memo' || kind === 'contract')) {
       try {
-        const { result } = await getRemoteSession(session.id);
+        const { result, chat_history } = await getRemoteSession(session.id);
         if (result) {
           chat.reset();
           memory.clear();
@@ -338,7 +352,15 @@ export function Workspace() {
               memo: (result.memo_text as string) ?? '',
             };
             setMemoData(memoResult);
-            setMemoJobId(null); // مفيش job نشط لسه لحد ما تتكلمي في الشات
+            setMemoJobId(null); // مؤقتًا لحد ما resumeMemoSession يرجّع job_id فعلي تحت
+            setMemoInitialChatMessages(toMemoChatMessages(chat_history));
+
+            // فعّلي job جديد على السيرفر عشان الشات يقدر يكمل التعديل على
+            // الجلسة دي (بدون ده كانت الجلسة بتفتح للقراءة بس) — best-effort:
+            // لو فشل، الجلسة تفضل متاحة للقراءة والمذكرة تتعرض عادي
+            resumeMemoSession(session.id)
+              .then(({ job_id }) => setMemoJobId(job_id))
+              .catch((e) => console.warn('فشل تفعيل الجلسة للتعديل بالشات:', e));
           } else {
             const clauses = (result.clauses as ContractResult['clauses']) ?? [];
             const contractResult: ContractResult = {
@@ -368,6 +390,7 @@ export function Workspace() {
     // fallback لجلسات قديمة اتحفظت قبل هذا الإصلاح ومفيهاش data محفوظة —
     // اضطراريًا لازم regenerate، بس بنفس الـ id عشان منكررش الجلسة
     handleNewSession();
+    setMemoInitialChatMessages(undefined);
     setCurrentSessionId(session.id);
     setInitialPrompt(session.prompt);
     startThinking(kind as TaskKind, session.prompt);
@@ -425,7 +448,7 @@ export function Workspace() {
       case 'review':
         return <Review initialPrompt={initialPrompt} embedded chatProps={sharedProps.chatProps} />;
       case 'memo':
-        return <Memo initialPrompt={initialPrompt} memoData={memoData} jobId={memoJobId} embedded chatProps={sharedProps.chatProps} onSwitchTask={handleChatSwitchTask} />;
+        return <Memo initialPrompt={initialPrompt} memoData={memoData} jobId={memoJobId} embedded chatProps={sharedProps.chatProps} onSwitchTask={handleChatSwitchTask} initialChatMessages={memoInitialChatMessages} />;
       case 'research':
       case 'consultation':
         return <Research initialPrompt={initialPrompt} embedded chatProps={sharedProps.chatProps} />;

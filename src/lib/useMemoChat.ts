@@ -24,8 +24,20 @@ export function useMemoChat(
   jobId: string | null,
   onSectionsUpdate?: (sections: MemoSection[]) => void,
   onSwitchTask?: (signal: SwitchTaskSignal) => void,
+  initialMessages?: MemoChatMessage[],
 ): MemoChatState {
-  const [messages, setMessages] = useState<MemoChatMessage[]>([]);
+  const [messages, setMessages] = useState<MemoChatMessage[]>(initialMessages ?? []);
+  // لو initialMessages وصلت بعد أول render (مثلاً استئناف جلسة قديمة بعد ما
+  // الفرونت خلص getRemoteSession/resume بشكل غير متزامن)، حدّثي الرسائل —
+  // لكن مرة واحدة بس عشان منمسحش رسائل جديدة اتبعتت فعلاً في الشات
+  const seededRef = useRef(false);
+  useEffect(() => {
+    if (seededRef.current) return;
+    if (initialMessages && initialMessages.length > 0) {
+      seededRef.current = true;
+      setMessages(initialMessages);
+    }
+  }, [initialMessages]);
   const [typing, setTyping] = useState(false);
   const [typingStatus, setTypingStatus] = useState('');
   const [context, setContext] = useState<string | null>(null);
