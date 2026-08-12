@@ -34,7 +34,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-import memo.pipeline as pipeline  # نفس ملف الـ pipeline من غير أي تعديل منطقي
+import pipeline  # نفس ملف الـ pipeline من غير أي تعديل منطقي
 from db import repo
 from db import client as db_client
 from auth import CurrentUser, get_current_user, try_get_current_user, require_session_access
