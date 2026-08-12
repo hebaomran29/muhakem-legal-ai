@@ -1,7 +1,7 @@
 import { type ReactNode } from 'react';
 import { Sidebar } from './Sidebar';
-import { IconButton, Logo } from './ui';
-import { Share2, MoreHorizontal, Bell, ChevronRight } from 'lucide-react';
+import { Logo } from './ui';
+import { ChevronRight } from 'lucide-react';
 import type { ScreenId } from '../lib/types';
 import type { SessionCard } from '../lib/sessionStore';
 
@@ -106,21 +106,6 @@ function TopBar({ current, onBack }: { current: ScreenId; onBack?: () => void })
             )}
           </>
         )}
-      </div>
-
-      <div className="flex items-center gap-2">
-<IconButton label="مشاركة" size="sm">
-          <Share2 className="w-4 h-4" />
-        </IconButton>
-        <IconButton label="الإشعارات" size="sm">
-          <span className="relative">
-            <Bell className="w-4 h-4" />
-            <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-accent-500 ring-2 ring-white" />
-          </span>
-        </IconButton>
-        <IconButton label="المزيد" size="sm">
-          <MoreHorizontal className="w-4 h-4" />
-        </IconButton>
       </div>
     </header>
   );

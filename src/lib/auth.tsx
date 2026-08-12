@@ -9,6 +9,7 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 import type { Session, User } from '@supabase/supabase-js';
 import { supabase } from './supabaseClient';
+import type { OnboardingProfile } from './authService';
 
 const BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '') || '';
 
@@ -30,25 +31,71 @@ type AuthState = {
   firms: Firm[];
   needsFirm: boolean; // مسجّل دخول بس معندوش مكتب لسه (أول مرة)
   signIn: (email: string, password: string) => Promise<string | null>; // ترجع رسالة خطأ لو فشل
-  signUp: (email: string, password: string) => Promise<string | null>;
+  signUp: (email: string, password: string) => Promise<{ error: string | null; needsEmailConfirmation: boolean }>;
   signOut: () => Promise<void>;
   createFirm: (name: string) => Promise<string | null>;
+  /** بتتخزن بعد إنشاء الحساب — الاسم الكامل وبيانات الملف المهني بتتحفظ في
+   *  user_metadata بتاعة Supabase (مفيش عمود/جدول منفصل ليها لسه). */
+  completeOnboarding: (profile: OnboardingProfile) => Promise<string | null>;
 };
+
+const PENDING_ONBOARDING_KEY = 'muhakem-pending-onboarding';
+export { PENDING_ONBOARDING_KEY };
+
+/** لو تفعيل الإيميل مفروض على المشروع، مفيش session فورية بعد signUp —
+ *  فبنخزّن بيانات الملف المهني اللي دخلتها مؤقتًا، ونطبّقها تلقائيًا هنا
+ *  أول ما تسجّل دخول فعليًا (بعد ما تدوس على رابط التأكيد). */
+async function applyPendingOnboarding(user: User): Promise<void> {
+  if (user.user_metadata?.full_name) return; // اتطبّقت قبل كده
+  let raw: string | null = null;
+  try {
+    raw = sessionStorage.getItem(PENDING_ONBOARDING_KEY);
+  } catch {
+    return;
+  }
+  if (!raw) return;
+  try {
+    const profile = JSON.parse(raw) as OnboardingProfile;
+    const { fullName, ...rest } = profile;
+    await supabase.auth.updateUser({ data: { full_name: fullName, ...rest } });
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.error('فشل تطبيق بيانات الملف المهني المؤجّلة:', e);
+  } finally {
+    try {
+      sessionStorage.removeItem(PENDING_ONBOARDING_KEY);
+    } catch {
+      /* ignore */
+    }
+  }
+}
 
 const AuthContext = createContext<AuthState | null>(null);
 
-async function fetchFirms(token: string): Promise<Firm[]> {
+/** null = فشل مؤقت (نت/سيرفر) — مش نعرف لسه لو فيه مكتب ولا لأ.
+ *  [] = فعلاً معندهاش مكتب (403 صريح من السيرفر).
+ *  [{...}] = عندها مكتب. */
+async function fetchFirms(token: string): Promise<Firm[] | null> {
   try {
     const res = await fetch(`${BASE_URL}/api/sessions`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     // /api/sessions بترجع 403 لو المستخدم معندوش firm لسه — مش خطأ حقيقي
     if (res.status === 403) return [];
-    if (!res.ok) return [];
+    if (!res.ok) {
+      // eslint-disable-next-line no-console
+      console.error(`فشل التحقق من المكتب: /api/sessions رجّع ${res.status}`);
+      return null;
+    }
     // النداء ده بس للتأكد إن فيه firm (مش لجلب الجلسات فعليًا هنا)
     return [{ id: 'unknown', name: '' }];
-  } catch {
-    return [];
+  } catch (e) {
+    // خطأ شبكة/سيرفر واقع — مش دليل إن معندهاش مكتب. لو رجّعنا [] هنا
+    // زي الأول، أي مستخدمة عندها مكتب فعلاً هتترمي لشاشة "إنشاء مكتب"
+    // غلط بمجرد ما الباك إند يقف أو يبطّئ لحظة.
+    // eslint-disable-next-line no-console
+    console.error('فشل الاتصال بالسيرفر أثناء التحقق من المكتب:', e);
+    return null;
   }
 }
 
@@ -56,15 +103,36 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [user, setUser] = useState<User | null>(null);
   const [firms, setFirms] = useState<Firm[]>([]);
+  // بنفصلها عن firms عشان لو fetchFirms فشلت مؤقتًا منرميش المستخدمة على
+  // شاشة "إنشاء مكتب" غلط وهي أصلاً عندها مكتب — فرق بين "لسه ما عرفناش"
+  // و"فعلاً معندهاش مكتب" (الحالة التانية دي بس اللي بتفعّل needsFirm)
+  const [firmsKnown, setFirmsKnown] = useState(false);
 
   useEffect(() => {
     const applySession = async (session: Session | null) => {
       _accessToken = session?.access_token ?? null;
       setUser(session?.user ?? null);
+      if (session?.user) await applyPendingOnboarding(session.user);
       if (session?.access_token) {
-        const f = await fetchFirms(session.access_token);
-        setFirms(f);
+        let f = await fetchFirms(session.access_token);
+        if (f === null) {
+          // محاولة تانية بعد ثانية — لو السيرفر كان لسه بيقوم (uvicorn
+          // --reload مثلاً) قبل ما نستسلم ونعتبرها فشل حقيقي
+          await new Promise((r) => setTimeout(r, 1000));
+          f = await fetchFirms(session.access_token);
+        }
+        if (f === null) {
+          // فشل فعلي (مش 403) — منعتبرهاش "معندهاش مكتب"، سيبيها تكمل
+          // للـ workspace عادي؛ أي نداء API حقيقي هيفشل برسالة واضحة لو
+          // فعلاً معندهاش صلاحية
+          setFirmsKnown(false);
+          setFirms([{ id: 'unknown', name: '' }]);
+        } else {
+          setFirmsKnown(true);
+          setFirms(f);
+        }
       } else {
+        setFirmsKnown(true);
         setFirms([]);
       }
       setLoading(false);
@@ -85,12 +153,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const signUp = async (email: string, password: string) => {
-    const { error } = await supabase.auth.signUp({ email, password });
-    return error ? translateAuthError(error.message) : null;
+    const { data, error } = await supabase.auth.signUp({ email, password });
+    if (error) return { error: translateAuthError(error.message), needsEmailConfirmation: false };
+    return { error: null, needsEmailConfirmation: !data.session };
   };
 
   const signOut = async () => {
     await supabase.auth.signOut();
+  };
+
+  const completeOnboarding = async (profile: OnboardingProfile) => {
+    const { fullName, ...rest } = profile;
+    const { error } = await supabase.auth.updateUser({
+      data: { full_name: fullName, ...rest },
+    });
+    if (error) return translateAuthError(error.message);
+    // updateUser بيحدّث الـ session تلقائيًا وبيطلق onAuthStateChange،
+    // فـ user في الـ state هيتحدّث لوحده من غير ما نحتاج نعمل setUser هنا
+    return null;
   };
 
   const createFirm = async (name: string) => {
@@ -105,6 +185,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const body = await res.json().catch(() => ({}));
         return body.detail || 'فشل إنشاء المكتب';
       }
+      setFirmsKnown(true);
       setFirms([{ id: 'created', name }]);
       return null;
     } catch (e) {
@@ -116,11 +197,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     loading,
     user,
     firms,
-    needsFirm: !loading && !!user && firms.length === 0,
+    needsFirm: !loading && !!user && firmsKnown && firms.length === 0,
     signIn,
     signUp,
     signOut,
     createFirm,
+    completeOnboarding,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
