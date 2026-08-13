@@ -23,8 +23,19 @@ export function useContractChat(
   jobId: string | null,
   onClausesUpdate?: (clauses: ContractClause[]) => void,
   onSwitchTask?: (signal: SwitchTaskSignal) => void,
+  initialMessages?: ContractChatMessage[],
 ): ContractChatState {
-  const [messages, setMessages] = useState<ContractChatMessage[]>([]);
+  const [messages, setMessages] = useState<ContractChatMessage[]>(initialMessages ?? []);
+  // زي useMemoChat بالظبط — تحديث لمرة واحدة لو initialMessages وصلت
+  // بعد أول render (استئناف جلسة عقد قديمة بشكل غير متزامن)
+  const seededRef = useRef(false);
+  useEffect(() => {
+    if (seededRef.current) return;
+    if (initialMessages && initialMessages.length > 0) {
+      seededRef.current = true;
+      setMessages(initialMessages);
+    }
+  }, [initialMessages]);
   const [typing, setTyping] = useState(false);
   const [typingStatus, setTypingStatus] = useState('');
   const [context, setContext] = useState<string | null>(null);

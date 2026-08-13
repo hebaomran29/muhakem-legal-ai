@@ -6,7 +6,7 @@
       هيدر أي request، من غير ما api.ts يحتاج يستورد React context.
    2) AuthProvider/useAuth — للواجهة (شاشة تسجيل الدخول والـ Workspace).
    ───────────────────────────────────────────────────────────── */
-import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import type { Session, User } from '@supabase/supabase-js';
 import { supabase } from './supabaseClient';
 import type { OnboardingProfile } from './authService';
@@ -107,6 +107,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // شاشة "إنشاء مكتب" غلط وهي أصلاً عندها مكتب — فرق بين "لسه ما عرفناش"
   // و"فعلاً معندهاش مكتب" (الحالة التانية دي بس اللي بتفعّل needsFirm)
   const [firmsKnown, setFirmsKnown] = useState(false);
+  // بمجرد ما نتأكد إن عندها مكتب مرة واحدة في الجلسة دي، منسيبش أي فحص
+  // لاحق (زي التحقق اللي بيحصل تلقائي كل شوية مع تجديد التوكن) يرجّعها
+  // لشاشة "إنشاء مكتب" تاني — حتى لو حصل 403 غريب لحظي. مكتب اتأكد وجوده
+  // مش المفروض "يختفي" غير لو سجّلت خروج فعلاً.
+  const confirmedFirmRef = useRef(false);
 
   useEffect(() => {
     const applySession = async (session: Session | null) => {
@@ -114,6 +119,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setUser(session?.user ?? null);
       if (session?.user) await applyPendingOnboarding(session.user);
       if (session?.access_token) {
+        if (confirmedFirmRef.current) {
+          // اتأكد قبل كده في الجلسة دي — مش محتاجين نتحقق تاني، وده بيمنع
+          // أي فحص خلفي يرجّعها لشاشة إنشاء المكتب غلط
+          setFirmsKnown(true);
+          setFirms([{ id: 'confirmed', name: '' }]);
+          setLoading(false);
+          return;
+        }
         let f = await fetchFirms(session.access_token);
         if (f === null) {
           // محاولة تانية بعد ثانية — لو السيرفر كان لسه بيقوم (uvicorn
@@ -130,8 +143,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         } else {
           setFirmsKnown(true);
           setFirms(f);
+          if (f.length > 0) confirmedFirmRef.current = true;
         }
       } else {
+        confirmedFirmRef.current = false;
         setFirmsKnown(true);
         setFirms([]);
       }
@@ -187,6 +202,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
       setFirmsKnown(true);
       setFirms([{ id: 'created', name }]);
+      confirmedFirmRef.current = true;
       return null;
     } catch (e) {
       return e instanceof Error ? e.message : 'فشل إنشاء المكتب';

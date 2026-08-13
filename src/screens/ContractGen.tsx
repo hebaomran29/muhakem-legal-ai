@@ -50,6 +50,7 @@ export function ContractGen({
   embedded = false,
   chatProps,
   onSwitchTask,
+  initialChatMessages,
 }: {
   contractData?: ContractResult | null;
   jobId?: string | null;
@@ -57,6 +58,7 @@ export function ContractGen({
   embedded?: boolean;
   chatProps?: ChatProps;
   onSwitchTask?: (signal: SwitchTaskSignal) => void;
+  initialChatMessages?: ContractChatMessage[];
 }) {
   // sidebarOpen removed — now using floating chat
   const [copied, setCopied] = useState(false);
@@ -82,7 +84,7 @@ export function ContractGen({
     setLiveClauses(updated);
   }, []);
 
-  const contractChat = useContractChat(jobId ?? null, handleClausesUpdate, onSwitchTask);
+  const contractChat = useContractChat(jobId ?? null, handleClausesUpdate, onSwitchTask, initialChatMessages);
   const { context, setContextLabel, clearContext } = contractChat;
 
 

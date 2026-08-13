@@ -1,5 +1,5 @@
 import { useState, useEffect, type FormEvent } from 'react';
-import { Briefcase, Loader2, AlertCircle, ArrowLeft, User as UserIcon } from 'lucide-react';
+import { Briefcase, Loader2, AlertCircle, ArrowLeft, Users } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { useAuth } from '../lib/auth';
 import { AuthShell, MobileLogo, AuthCard, FormField } from './auth/AuthShared';
@@ -25,14 +25,19 @@ function CreateFirmStep() {
     <AuthShell
       brandingChildren={
         <>
+          <div className="flex items-center gap-3 mb-5">
+            <Briefcase className="w-7 h-7 text-gold-400" strokeWidth={1.5} />
+            <span className="h-px w-12 bg-gradient-to-l from-gold-400/60 to-transparent" />
+          </div>
           <h1
             className="text-white text-3xl xl:text-4xl leading-[1.2] font-700"
             style={{ fontFamily: '"IBM Plex Sans Arabic", "Cairo", sans-serif' }}
           >
-            خطوة أخيرة
+            خطوة أخيرة قبل ما نبدأ
           </h1>
           <p className="mt-4 text-primary-200/70 text-sm font-500 leading-relaxed">
-            اسم مكتبك أو فريقك — هتقدري تضيفي زميلاتك بعد كده.
+            مساحة عمل خاصة بمكتبك — جلساتك، مذكراتك، وعقودك كلها هتتحفظ
+            جواها، وتقدري تضيفي زميلاتك عليها بعد كده.
           </p>
         </>
       }
@@ -43,9 +48,9 @@ function CreateFirmStep() {
           <div className="mx-auto w-12 h-12 rounded-2xl bg-primary-50 border border-primary-100 grid place-items-center mb-4">
             <Briefcase className="w-5 h-5 text-primary-600" strokeWidth={1.8} />
           </div>
-          <h2 className="font-display font-700 text-ink text-2xl leading-tight">خطوة أخيرة</h2>
+          <h2 className="font-display font-700 text-ink text-2xl leading-tight">مساحة عمل مكتبك</h2>
           <p className="mt-1.5 text-sand-500 text-[0.82rem] leading-relaxed">
-            اسم مكتبك/فريقك — هتقدري تضيفي زميلاتك بعد كده
+            اختاري اسمًا لمكتبك أو فريقك — تقدري تغيّريه لاحقًا من الإعدادات
           </p>
         </div>
 
@@ -59,12 +64,16 @@ function CreateFirmStep() {
         <form onSubmit={handleSubmit} className="space-y-4">
           <FormField
             label="اسم المكتب/الفريق"
-            icon={UserIcon}
+            icon={Briefcase}
             value={name}
             onChange={setName}
             placeholder="مثال: مكتب الرفاعي للمحاماة"
             autoFocus
           />
+          <p className="text-[0.7rem] text-sand-400 -mt-2 flex items-center gap-1.5">
+            <Users className="w-3 h-3" strokeWidth={1.5} />
+            هتقدري تدعي زميلاتك للمكتب ده بعد الإعداد مباشرة
+          </p>
 
           <button
             type="submit"
