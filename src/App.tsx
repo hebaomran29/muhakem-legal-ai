@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { WorkspaceShell } from './components/WorkspaceShell';
 import { Workspace } from './components/Workspace';
+import { AuthLoadingScreen } from './components/AuthLoadingScreen';
 import { History } from './screens/History';
 import { Report } from './screens/Report';
 import { ContractDoc } from './screens/ContractDoc';
@@ -68,11 +69,7 @@ export default function App() {
   const currentScreen: ScreenId = overlayScreen ?? 'landing';
 
   if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center text-neutral-400">
-        ...جاري التحميل
-      </div>
-    );
+    return <AuthLoadingScreen />;
   }
 
   if (!user || needsFirm) {

@@ -17,6 +17,16 @@ import { useSessions, type SessionCard } from '../lib/sessionStore';
 import { cn } from '../lib/cn';
 import type { ScreenId, ChatKind } from '../lib/types';
 import { useState, useMemo } from 'react';
+import { useAuth } from '../lib/auth';
+
+/** الاسم المعروض في بروفايل الـ Sidebar — full_name لو محفوظ وقت onboarding،
+ * وإلا الجزء قبل @ من الإيميل، وإلا نص افتراضي محايد لو لسه مفيش user. */
+function displayName(user: ReturnType<typeof useAuth>['user']): string {
+  const fullName = (user?.user_metadata as { full_name?: string } | undefined)?.full_name;
+  if (fullName && fullName.trim()) return fullName.trim();
+  if (user?.email) return user.email.split('@')[0];
+  return 'مستخدم';
+}
 
 const kindIcon: Record<ChatKind, typeof FileText> = {
   'contract-review': FileText,
@@ -150,6 +160,8 @@ export function Sidebar({
   onToggle: () => void;
 }) {
   const { pinnedSessions, recentSessions, togglePin, remove } = useSessions();
+  const { user } = useAuth();
+  const name = displayName(user);
   const [search, setSearch] = useState('');
 
   const filteredPinned = useMemo(() => {
@@ -189,7 +201,7 @@ export function Sidebar({
       <aside
         className={cn(
           'relative h-full flex flex-col bg-white border-l border-sand-200 transition-[width] duration-500 ease-out-expo shrink-0',
-          collapsed ? 'w-[76px]' : 'w-[300px]',
+          collapsed ? 'w-[72px]' : 'w-[256px]',
         )}
       >
         {/* Brand + collapse */}
@@ -363,10 +375,10 @@ export function Sidebar({
               collapsed && 'justify-center',
             )}
           >
-            <Avatar name="عمر الخالد" size={36} />
+            <Avatar name={name} size={36} />
             {!collapsed && (
               <div className="flex-1 min-w-0">
-                <div className="text-[0.82rem] font-600 text-ink truncate">عمر الخالد</div>
+                <div className="text-[0.82rem] font-600 text-ink truncate">{name}</div>
                 <div className="text-[0.66rem] text-sand-500 flex items-center gap-1">
                   <Sparkles className="w-3 h-3 text-gold-400" /> خطة المحترف
                 </div>

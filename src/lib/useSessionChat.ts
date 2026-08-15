@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import type { SessionMessage, ChangeCard } from '../components/SessionChat';
+import { sendConsultationChat } from './api';
 
 export type TaskKind = 'contract' | 'review' | 'memo' | 'research' | 'consultation';
 
@@ -65,6 +66,10 @@ export function useSessionChat() {
   const [context, setContext] = useState<string | null>(null);
   const idRef = useRef(0);
   const statusTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // db session id بتاع الاستشارة (لو المستخدم مسجّل دخول) — بيتحفظ من أول
+  // رد يرجع من /api/consultation/chat وبيتبعت في أي رسالة تالية عشان
+  // الأسئلة التابعة تفتكر السياق (ConversationState في الباك إند).
+  const consultationSessionIdRef = useRef<string | null>(null);
 
   const clearStatusTimer = useCallback(() => {
     if (statusTimerRef.current) {
@@ -75,6 +80,33 @@ export function useSessionChat() {
 
   useEffect(() => () => clearStatusTimer(), [clearStatusTimer]);
 
+  const startTypingCycle = useCallback((kind: TaskKind) => {
+    const statuses = statusMessages[kind] ?? statusMessages.consultation;
+    let si = 0;
+    setTyping(true);
+    setTypingStatus(statuses[0] || 'يفكّر...');
+    clearStatusTimer();
+    statusTimerRef.current = setInterval(() => {
+      si = (si + 1) % statuses.length;
+      setTypingStatus(statuses[si]);
+    }, 1400);
+  }, [clearStatusTimer]);
+
+  const askConsultation = useCallback(async (text: string): Promise<SessionMessage> => {
+    try {
+      const res = await sendConsultationChat(text, consultationSessionIdRef.current);
+      if (res.session_id) consultationSessionIdRef.current = res.session_id;
+      return { id: `s-a${idRef.current++}`, role: 'assistant', text: res.reply };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'حدث خطأ غير متوقع';
+      return {
+        id: `s-a${idRef.current++}`,
+        role: 'assistant',
+        text: `تعذّر الحصول على إجابة الاستشارة (${msg}). حاول مرة أخرى.`,
+      };
+    }
+  }, []);
+
   const send = useCallback(
     (text: string, kind: TaskKind = 'consultation') => {
       const userMsg: SessionMessage = {
@@ -83,16 +115,17 @@ export function useSessionChat() {
         text,
       };
       setMessages((m) => [...m, userMsg]);
-      setTyping(true);
+      startTypingCycle(kind);
 
-      const statuses = statusMessages[kind] ?? statusMessages.consultation;
-      let si = 0;
-      setTypingStatus(statuses[0] || 'يفكّر...');
-      clearStatusTimer();
-      statusTimerRef.current = setInterval(() => {
-        si = (si + 1) % statuses.length;
-        setTypingStatus(statuses[si]);
-      }, 1400);
+      if (kind === 'consultation') {
+        askConsultation(text).then((assistantMsg) => {
+          clearStatusTimer();
+          setTyping(false);
+          setTypingStatus('');
+          setMessages((m) => [...m, assistantMsg]);
+        });
+        return;
+      }
 
       setTimeout(() => {
         clearStatusTimer();
@@ -120,18 +153,37 @@ export function useSessionChat() {
         setMessages((m) => [...m, assistantMsg]);
       }, 1800 + Math.random() * 800);
     },
-    [clearStatusTimer],
+    [clearStatusTimer, startTypingCycle, askConsultation],
   );
 
   const seed = useCallback(
     (initialText: string, kind: TaskKind = 'consultation') => {
+      const userMsg: SessionMessage = {
+        id: `s-seed-u`,
+        role: 'user',
+        text: initialText,
+      };
+
+      if (kind === 'consultation') {
+        let shouldSeed = false;
+        setMessages((prev) => {
+          if (prev.length > 0) return prev;
+          shouldSeed = true;
+          return [userMsg];
+        });
+        if (!shouldSeed) return;
+        startTypingCycle(kind);
+        askConsultation(initialText).then((assistantMsg) => {
+          clearStatusTimer();
+          setTyping(false);
+          setTypingStatus('');
+          setMessages((prev) => [...prev, assistantMsg]);
+        });
+        return;
+      }
+
       setMessages((prev) => {
         if (prev.length > 0) return prev;
-        const userMsg: SessionMessage = {
-          id: `s-seed-u`,
-          role: 'user',
-          text: initialText,
-        };
         const replyMsg: SessionMessage = {
           id: `s-seed-a`,
           role: 'assistant',
@@ -140,7 +192,7 @@ export function useSessionChat() {
         return [userMsg, replyMsg];
       });
     },
-    [],
+    [startTypingCycle, askConsultation, clearStatusTimer],
   );
 
   const reset = useCallback(() => {
@@ -149,6 +201,7 @@ export function useSessionChat() {
     setTyping(false);
     setTypingStatus('');
     setContext(null);
+    consultationSessionIdRef.current = null;
   }, [clearStatusTimer]);
 
   const setContextLabel = useCallback((label: string | null) => {
