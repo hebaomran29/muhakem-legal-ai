@@ -115,11 +115,19 @@ def split_memo_into_sections(memo: str) -> tuple[str, list[dict]]:
 
 def reconstruct_memo(header: str, sections: list[dict]) -> str:
     """يعيد بناء نص المذكرة الكامل من header + sections — مستخدم بعد أي تعديل
-    (save يدوي أو chat-edit) عشان الـ validators تشتغل على النص الكامل الصحيح."""
-    parts = [header.strip()]
+    (save يدوي أو chat-edit) عشان الـ validators تشتغل على النص الكامل الصحيح.
+
+    header بييجي دايمًا من الـ job state الداخلي (نص مضمون)، لكن sections في
+    /api/memo/{job_id}/save بتيجي مباشرة من body الطلب من الفرونت — لو أي
+    قسم اتبعت بـ title/body = None (باگ فرونت أو استدعاء API يدوي) كانت
+    .strip() بتكسر بـ NoneType crash؛ الحماية هنا بتضمن دايمًا str."""
+    def _safe(value) -> str:
+        return value if isinstance(value, str) else ""
+
+    parts = [_safe(header).strip()]
     for s in sections:
-        parts.append(s["title"])
-        parts.append(s["body"].strip())
+        parts.append(_safe(s.get("title")))
+        parts.append(_safe(s.get("body")).strip())
     return "\n\n".join(p for p in parts if p)
 
 
@@ -283,7 +291,14 @@ def _run_job(job_id: str):
                     db_session_id, sections, case_metadata,
                     result.get("sources", {}), final_memo,
                 )
-                repo.touch_session(db_session_id)
+                # عنوان مختصر في السايد بار بدل أول 60 حرف من كلام المحامية
+                # الحر (اللي كان بيطلع فقرة كاملة) — لو قدرنا نستخرج نوع
+                # الجريمة/اسم المتهم من case_metadata نستخدمهم، وإلا نسيب
+                # العنوان زي ما هو (أول 60 حرف، اتحطوا وقت إنشاء الجلسة)
+                short_title = " — ".join(
+                    p for p in (case_metadata.get("crime_type"), case_metadata.get("defendant_name")) if p
+                )
+                repo.touch_session(db_session_id, title=short_title or None)
             except Exception as e:
                 print(f"⚠️ فشل حفظ نتيجة المذكرة في الداتابيز: {e}")
     except Exception as e:
@@ -1075,7 +1090,7 @@ def _run_contract_job(job_id: str):
                 repo.save_contract_result(
                     db_session_id, clauses, job["result"]["contract_type_ar"],
                 )
-                repo.touch_session(db_session_id)
+                repo.touch_session(db_session_id, title=job["result"]["contract_type_ar"] or None)
             except Exception as e:
                 print(f"⚠️ فشل حفظ نتيجة العقد في الداتابيز: {e}")
     except Exception as e:
@@ -1411,6 +1426,62 @@ def download_contract_docx(job_id: str):
         path=docx_path,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         filename=filename,
+    )
+
+
+@app.post("/api/contract/{session_id}/resume", response_model=ResumeResponse)
+def resume_contract(session_id: str, user: CurrentUser = Depends(get_current_user)):
+    """نفس فكرة resume_memo بس للعقود. تنويه: preamble/closing (مقدمة
+    العقد وخاتمة التوقيعات) مش متخزنين في contract_results — بس البنود
+    (clauses) ونوع العقد. يعني العقد المُعاد بناؤه هنا من غير مقدمة ولا
+    خاتمة توقيعات؛ لو الشات بعد الاستئناف عدّل وحفظ، هتفتقد الجزءين دول
+    من النسخة النهائية. لتفادي كده بالكامل لازم schema change (تخزين
+    preamble/closing كمان في contract_results) — مش متعمول لسه."""
+    require_session_access(session_id, user)
+    session = repo.get_session(session_id)
+    if session is None or session.get("type") != "contract":
+        raise HTTPException(status_code=404, detail="جلسة عقد مش موجودة")
+
+    contract_result = repo.get_contract_result(session_id)
+    if contract_result is None:
+        raise HTTPException(status_code=409, detail="مفيش نتيجة محفوظة للعقد ده لسه")
+
+    clauses = contract_result.get("clauses") or []
+    contract_type_ar = contract_result.get("contract_type_ar") or ""
+    contract_text = _reconstruct_contract("", clauses, "")  # من غير preamble/closing — شايفة التنويه فوق
+
+    db_chat_history = repo.get_chat_history(session_id)
+
+    job_id = str(uuid.uuid4())
+    with _contract_jobs_lock:
+        _contract_jobs[job_id] = {
+            "status": JobStatus.COMPLETED,
+            "progress": 1.0,
+            "stage": None,
+            "logs": [],
+            "last_log": None,
+            "input": {"query": session.get("prompt") or ""},
+            "result": {
+                "contract_text": contract_text,
+                "preamble": "",
+                "closing": "",
+                "clauses": clauses,
+                "contract_type_key": None,
+                "contract_type_ar": contract_type_ar,
+                "clause_validation": {},
+                "docx_path": None,
+            },
+            "error": None,
+            "chat_history": [
+                {"role": m["role"], "message": m["text"]} for m in db_chat_history
+            ],
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "db_session_id": session_id,
+        }
+
+    return ResumeResponse(
+        job_id=job_id, status=JobStatus.COMPLETED,
+        db_session_id=session_id, chat_history=db_chat_history,
     )
 
 
