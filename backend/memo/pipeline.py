@@ -23,12 +23,13 @@ load_dotenv()
 print('✅ imports OK')
 
 # ── Keys (من متغيرات البيئة — املأيها في .env، وليس هنا) ───────────────────
-OPENROUTER_KEY = os.environ.get("OPENROUTER_KEY", "")
+# OPENROUTER_KEY = os.environ.get("OPENROUTER_KEY", "")
 QDRANT_URL = os.environ.get("QDRANT_URL", "")
 QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY", "")
-
+LLM_MODEL = "qwen3:14b"
+OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1")
 MUFFAKIR_MODEL = "mohamed2811/Muffakir_Embedding_V2"
-LLM_MODEL = "openai/gpt-4o-mini"
+
 
 # ── Collection Names ─────────────────────────────────────────────────────────
 COL_LAWS = "laws_only"
@@ -76,11 +77,11 @@ def _ensure_pipeline():
 
     # 3) LLM
     try:
-        if OPENROUTER_KEY:
-            _llm = OpenAI(api_key=OPENROUTER_KEY, base_url="https://openrouter.ai/api/v1")
+        if OLLAMA_BASE_URL:
+            _llm = OpenAI(base_url=OLLAMA_BASE_URL)
             print("✅ LLM client ready")
         else:
-            print("⚠️ OPENROUTER_KEY مش متوفر")
+            print("⚠️ OLLAMA_BASE_URL مش متوفر")
     except Exception as e:
         print(f"⚠️ LLM client فشل: {e}")
 
@@ -95,13 +96,13 @@ def embed(text: str) -> list[float]:
 def llm_text(messages: list[dict], temperature: float = 0.2, max_tokens: int = 1000,
              model: str | None = None, retries: int = 1) -> str:
     """نداء موحّد لأي completion من الـ LLM، بيتأكد إن الرد فيه نص فعلي قبل
-    ما يرجّعه. أحيانًا OpenRouter بيرجّع content=None (تعطل مؤقت من المزوّد،
+    ما يرجّعه. أحيانًا OpenRouter بيرجّع content=None (تعطل مؤقت من المزوّد，
     أو رفض ضمني) — من غير الفحص ده، أي كود بيستخدم .strip() على الرد بيكسر
     فورًا برسالة غامضة 'NoneType' object has no attribute 'strip'. هنا بنعمل
     retry واحد تلقائي، ولو لسه فاضي بنرفع خطأ واضح بدل الكراش الصامت."""
     _ensure_pipeline()
     if not _llm:
-        raise RuntimeError("LLM مش متاح — تأكد من OPENROUTER_KEY في ملف .env")
+        raise RuntimeError("LLM مش متاح — تأكد من OLLAMA_BASE_URL في ملف .env")
 
     last_content = None
     for attempt in range(retries + 1):

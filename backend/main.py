@@ -38,7 +38,6 @@ from memo import pipeline  # نفس ملف الـ pipeline من غير أي تع
 from db import repo
 from db import client as db_client
 from auth import CurrentUser, get_current_user, try_get_current_user, require_session_access
-from consultation import legal_agent
 
 # ── استيراد pipeline العقود ──────────────────────────────────────────────────
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "contracts"))
@@ -116,19 +115,11 @@ def split_memo_into_sections(memo: str) -> tuple[str, list[dict]]:
 
 def reconstruct_memo(header: str, sections: list[dict]) -> str:
     """يعيد بناء نص المذكرة الكامل من header + sections — مستخدم بعد أي تعديل
-    (save يدوي أو chat-edit) عشان الـ validators تشتغل على النص الكامل الصحيح.
-
-    header بييجي دايمًا من الـ job state الداخلي (نص مضمون)، لكن sections في
-    /api/memo/{job_id}/save بتيجي مباشرة من body الطلب من الفرونت — لو أي
-    قسم اتبعت بـ title/body = None (باگ فرونت أو استدعاء API يدوي) كانت
-    .strip() بتكسر بـ NoneType crash؛ الحماية هنا بتضمن دايمًا str."""
-    def _safe(value) -> str:
-        return value if isinstance(value, str) else ""
-
-    parts = [_safe(header).strip()]
+    (save يدوي أو chat-edit) عشان الـ validators تشتغل على النص الكامل الصحيح."""
+    parts = [(header or "").strip()]
     for s in sections:
-        parts.append(_safe(s.get("title")))
-        parts.append(_safe(s.get("body")).strip())
+        parts.append(s.get("title") or "")
+        parts.append((s.get("body") or "").strip())
     return "\n\n".join(p for p in parts if p)
 
 
@@ -872,71 +863,6 @@ def chat_edit(payload: ChatEditRequest):
     return response
 
 
-class ConsultationChatRequest(BaseModel):
-    message: str
-    session_id: Optional[str] = None  # None = يبدأ جلسة استشارة جديدة
-
-
-class ConsultationChatResponse(BaseModel):
-    session_id: Optional[str] = None
-    reply: str
-    needs_clarification: bool = False
-    routing: Optional[dict] = None
-
-
-@app.post("/api/consultation/chat", response_model=ConsultationChatResponse)
-def consultation_chat(payload: ConsultationChatRequest,
-                       user: "CurrentUser | None" = Depends(try_get_current_user)):
-    """استشارة/بحث قانوني عن الـ 7 قوانين في مجموعة laws_only — sync (مفيش
-    job queue زي المذكرات، لأن الرد بياخد ثواني مش دقايق). بترجع session_id
-    ثابت من أول رسالة (لو المستخدم مسجّل دخول) عشان تقدري تكمّلي عليه، وتغذّي
-    الـ Sidebar بنفس نمط المذكرات/العقود.
-    """
-    if not payload.message or not payload.message.strip():
-        raise HTTPException(status_code=400, detail="message فاضي")
-
-    db_session_id = payload.session_id
-    conversation_state = legal_agent.ConversationState()
-
-    if db_session_id:
-        if user:
-            require_session_access(db_session_id, user)
-        try:
-            db_history = repo.get_chat_history(db_session_id)
-            conversation_state = legal_agent.ConversationState.from_db_history(db_history)
-        except Exception as e:
-            print(f"⚠️ فشل تحميل تاريخ شات الاستشارة: {e}")
-    elif user:
-        try:
-            session_row = repo.create_session(
-                user.firm_id, user.user_id, "consultation",
-                title=payload.message.strip()[:60], prompt=payload.message,
-            )
-            db_session_id = str(session_row["id"])
-        except Exception as e:
-            print(f"⚠️ فشل حفظ جلسة الاستشارة في الداتابيز (هتكمل من غير حفظ دائم): {e}")
-
-    try:
-        result = legal_agent.answer_question(payload.message, conversation_state)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"فشلت الاستشارة: {e}")
-
-    if db_session_id:
-        try:
-            repo.append_chat_message(db_session_id, "user", payload.message)
-            repo.append_chat_message(db_session_id, "assistant", result["answer"])
-            repo.touch_session(db_session_id)
-        except Exception as e:
-            print(f"⚠️ فشل حفظ رسائل الاستشارة في الداتابيز: {e}")
-
-    return ConsultationChatResponse(
-        session_id=db_session_id,
-        reply=result["answer"],
-        needs_clarification=result.get("needs_clarification", False),
-        routing=result.get("routing"),
-    )
-
-
 class ResumeResponse(BaseModel):
     job_id: str
     status: str
@@ -1005,6 +931,62 @@ def resume_memo(session_id: str, user: CurrentUser = Depends(get_current_user)):
                 "validation": None,
                 "case_facts": case_facts_lite,
                 "sources": memo_result.get("sources") or {},
+            },
+            "error": None,
+            "chat_history": [
+                {"role": m["role"], "message": m["text"]} for m in db_chat_history
+            ],
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "db_session_id": session_id,
+        }
+
+    return ResumeResponse(
+        job_id=job_id, status=JobStatus.COMPLETED,
+        db_session_id=session_id, chat_history=db_chat_history,
+    )
+
+
+@app.post("/api/contract/{session_id}/resume", response_model=ResumeResponse)
+def resume_contract(session_id: str, user: CurrentUser = Depends(get_current_user)):
+    """نفس فكرة resume_memo بس للعقود. تنويه: preamble/closing (مقدمة
+    العقد وخاتمة التوقيعات) مش متخزنين في contract_results — بس البنود
+    (clauses) ونوع العقد. يعني العقد المُعاد بناؤه هنا من غير مقدمة ولا
+    خاتمة توقيعات؛ لو الشات بعد الاستئناف عدّل وحفظ، هتفتقد الجزءين دول
+    من النسخة النهائية. لتفادي كده بالكامل لازم schema change (تخزين
+    preamble/closing كمان في contract_results) — مش متعمول لسه."""
+    require_session_access(session_id, user)
+    session = repo.get_session(session_id)
+    if session is None or session.get("type") != "contract":
+        raise HTTPException(status_code=404, detail="جلسة عقد مش موجودة")
+
+    contract_result = repo.get_contract_result(session_id)
+    if contract_result is None:
+        raise HTTPException(status_code=409, detail="مفيش نتيجة محفوظة للعقد ده لسه")
+
+    clauses = contract_result.get("clauses") or []
+    contract_type_ar = contract_result.get("contract_type_ar") or ""
+    contract_text = _reconstruct_contract("", clauses, "")  # من غير preamble/closing — شايفة التنويه فوق
+
+    db_chat_history = repo.get_chat_history(session_id)
+
+    job_id = str(uuid.uuid4())
+    with _contract_jobs_lock:
+        _contract_jobs[job_id] = {
+            "status": JobStatus.COMPLETED,
+            "progress": 1.0,
+            "stage": None,
+            "logs": [],
+            "last_log": None,
+            "input": {"query": session.get("prompt") or ""},
+            "result": {
+                "contract_text": contract_text,
+                "preamble": "",
+                "closing": "",
+                "clauses": clauses,
+                "contract_type_key": None,
+                "contract_type_ar": contract_type_ar,
+                "clause_validation": {},
+                "docx_path": None,
             },
             "error": None,
             "chat_history": [
@@ -1495,62 +1477,6 @@ def download_contract_docx(job_id: str):
     )
 
 
-@app.post("/api/contract/{session_id}/resume", response_model=ResumeResponse)
-def resume_contract(session_id: str, user: CurrentUser = Depends(get_current_user)):
-    """نفس فكرة resume_memo بس للعقود. تنويه: preamble/closing (مقدمة
-    العقد وخاتمة التوقيعات) مش متخزنين في contract_results — بس البنود
-    (clauses) ونوع العقد. يعني العقد المُعاد بناؤه هنا من غير مقدمة ولا
-    خاتمة توقيعات؛ لو الشات بعد الاستئناف عدّل وحفظ، هتفتقد الجزءين دول
-    من النسخة النهائية. لتفادي كده بالكامل لازم schema change (تخزين
-    preamble/closing كمان في contract_results) — مش متعمول لسه."""
-    require_session_access(session_id, user)
-    session = repo.get_session(session_id)
-    if session is None or session.get("type") != "contract":
-        raise HTTPException(status_code=404, detail="جلسة عقد مش موجودة")
-
-    contract_result = repo.get_contract_result(session_id)
-    if contract_result is None:
-        raise HTTPException(status_code=409, detail="مفيش نتيجة محفوظة للعقد ده لسه")
-
-    clauses = contract_result.get("clauses") or []
-    contract_type_ar = contract_result.get("contract_type_ar") or ""
-    contract_text = _reconstruct_contract("", clauses, "")  # من غير preamble/closing — شايفة التنويه فوق
-
-    db_chat_history = repo.get_chat_history(session_id)
-
-    job_id = str(uuid.uuid4())
-    with _contract_jobs_lock:
-        _contract_jobs[job_id] = {
-            "status": JobStatus.COMPLETED,
-            "progress": 1.0,
-            "stage": None,
-            "logs": [],
-            "last_log": None,
-            "input": {"query": session.get("prompt") or ""},
-            "result": {
-                "contract_text": contract_text,
-                "preamble": "",
-                "closing": "",
-                "clauses": clauses,
-                "contract_type_key": None,
-                "contract_type_ar": contract_type_ar,
-                "clause_validation": {},
-                "docx_path": None,
-            },
-            "error": None,
-            "chat_history": [
-                {"role": m["role"], "message": m["text"]} for m in db_chat_history
-            ],
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "db_session_id": session_id,
-        }
-
-    return ResumeResponse(
-        job_id=job_id, status=JobStatus.COMPLETED,
-        db_session_id=session_id, chat_history=db_chat_history,
-    )
-
-
 # ═══════════════════════════════════════════════════════════════════════════
 # ── Firms & Sessions (الداتابيز الدائمة) ────────────────────────────────
 # مطلوب Authorization: Bearer <supabase_access_token> على كل الـ endpoints دي
@@ -1584,6 +1510,27 @@ def invite_member(payload: InviteMemberRequest, user: CurrentUser = Depends(get_
         raise HTTPException(status_code=404, detail="مفيش حساب مسجّل بالإيميل ده")
     repo.add_member_to_firm(user.firm_id, found_user["id"])
     return {"success": True}
+
+
+class MeResponse(BaseModel):
+    user_id: str
+    email: Optional[str] = None
+    firm_ids: list[str] = []
+
+
+@app.get("/api/me", response_model=MeResponse)
+def get_me(user: "CurrentUser | None" = Depends(try_get_current_user)):
+    """المصدر الوحيد والموثوق لمعرفة هل المستخدمة عندها مكتب ولا لأ.
+    مقصود إنه يكون مستقل عن أي endpoint تاني (زي /api/sessions اللي
+    كانت الطريقة القديمة بتخمّن الحالة من status code بتاعه، وده كان
+    بيدّي false positive لـ"معندهاش مكتب" مع أي خطأ عابر). بيرجّع 401
+    لو مفيش توكن أصلاً، لكن معندهوش أي حالة "خطأ" تانية — لو المستخدمة
+    مسجّلة دخول بس معندهاش مكتب لسه، firm_ids بترجع [] عادي من غير أي
+    exception (try_get_current_user و.firm_ids مش .firm_id، فمفيش
+    الـ 403 اللي بيطلع من الـ property لو حد نادى عليه)."""
+    if user is None:
+        raise HTTPException(status_code=401, detail="مفيش توكن مصادقة — سجّلي دخول")
+    return MeResponse(user_id=user.user_id, email=user.email, firm_ids=user.firm_ids)
 
 
 @app.get("/api/sessions")

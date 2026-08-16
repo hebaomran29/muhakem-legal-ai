@@ -73,22 +73,24 @@ async function applyPendingOnboarding(user: User): Promise<void> {
 const AuthContext = createContext<AuthState | null>(null);
 
 /** null = فشل مؤقت (نت/سيرفر) — مش نعرف لسه لو فيه مكتب ولا لأ.
- *  [] = فعلاً معندهاش مكتب (403 صريح من السيرفر).
- *  [{...}] = عندها مكتب. */
+ *  [] = فعلاً معندهاش مكتب (/api/me رجّعت firm_ids فاضية).
+ *  [{...}] = عندها مكتب.
+ *  بتستخدم /api/me مباشرة (endpoint مخصوص لده) بدل ما تخمّن الحالة من
+ *  status code بتاع /api/sessions زي الأول — /api/sessions كانت بترجع
+ *  403 لغياب المكتب OK، لكن أي خطأ تاني (500 مؤقت، مشكلة شبكة) كان بيتفسر
+ *  غلط، وده كان سبب رجوع شاشة "إنشاء مكتب" لمستخدمات عندهم مكتب بالفعل. */
 async function fetchFirms(token: string): Promise<Firm[] | null> {
   try {
-    const res = await fetch(`${BASE_URL}/api/sessions`, {
+    const res = await fetch(`${BASE_URL}/api/me`, {
       headers: { Authorization: `Bearer ${token}` },
     });
-    // /api/sessions بترجع 403 لو المستخدم معندوش firm لسه — مش خطأ حقيقي
-    if (res.status === 403) return [];
     if (!res.ok) {
       // eslint-disable-next-line no-console
-      console.error(`فشل التحقق من المكتب: /api/sessions رجّع ${res.status}`);
+      console.error(`فشل التحقق من المكتب: /api/me رجّع ${res.status}`);
       return null;
     }
-    // النداء ده بس للتأكد إن فيه firm (مش لجلب الجلسات فعليًا هنا)
-    return [{ id: 'unknown', name: '' }];
+    const data: { firm_ids: string[] } = await res.json();
+    return data.firm_ids.map((id) => ({ id, name: '' }));
   } catch (e) {
     // خطأ شبكة/سيرفر واقع — مش دليل إن معندهاش مكتب. لو رجّعنا [] هنا
     // زي الأول، أي مستخدمة عندها مكتب فعلاً هتترمي لشاشة "إنشاء مكتب"
