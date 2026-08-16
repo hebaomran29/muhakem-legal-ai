@@ -1,1559 +1,1694 @@
-# main.py — طبقة الـ backend فوق pipeline.py
+# ⚖️ HaqqiBot — Defense Memos Pipeline
 #
-# ⚠️ نفس القاعدة الأصلية: الملف ده مبيعدلش في منطق pipeline.py ولا ترتيب
-# تنفيذه. كل حاجة إضافية هنا (تقسيم الأقسام، استخراج الـ metadata، الـ
-# chat-edit) بتستخدم دوال pipeline.py الموجودة فعلاً (validators، الـ LLM
-# client، القواميس القانونية) من غير ما تلمس تعريفاتها.
+# ⚠️ ده نفس منطق النوتبوك الأصلي حرفياً (الاسترجاع من Qdrant، توسيع
+# الوقائع، بناء الـ prompt، التوليد، الـ self-correction loop). التنضيف
+# اللي حصل هنا بس: شيل عناوين الـ Cells وفقرات الشرح اللي كانت من غير #
+# (كانت بتعمل SyntaxError)، شيل سطر !pip (ده Jupyter magic مش بايثون)،
+# شيل تكرار سطر الاتصال بـ Qdrant، ونقل الـ API keys لمتغيرات بيئة بدل
+# ما تكون مكتوبة نصاً صريحاً جوه الكود.
 #
-# ── العقد اللي Bolt هيشتغل عليه (5 أقسام حقيقية مطابقة لقالب المذكرة) ──────
-# id                  | العنوان
-# --------------------|---------------------------------------
-# waqai               | أولاً: وقائع الدعوى
-# difa_shakliya       | ثانياً: الدفوع الشكلية
-# difa_mawdoiya       | ثالثاً: الدفوع الموضوعية
-# talabat_khitamiya   | رابعاً: الطلبات الختامية
-# talabat_ijraiya     | خامساً: الطلبات الإجرائية المصاحبة
-#
-# مفيش "تحليل قانوني" منفصل ومفيش "خاتمة" — دول مش موجودين في قالب
-# المذكرة القانوني الفعلي. لو الفرونت عنده أقسام تانية لازم تتغير هناك.
+# مفيش أي تعديل في المنطق القانوني أو ترتيب التنفيذ.
 
 import os
 import re
-import sys
-import uuid
 import json
-import queue
-import threading
-import traceback
-from datetime import datetime, timezone
-from contextlib import redirect_stdout
-from typing import Optional
+from openai import OpenAI
+from qdrant_client import QdrantClient
+from sentence_transformers import SentenceTransformer
+import numpy as np
+from dotenv import load_dotenv
 
-from fastapi import FastAPI, HTTPException, Depends, Header
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
-from pydantic import BaseModel
+load_dotenv()
 
-import pipeline  # نفس ملف الـ pipeline من غير أي تعديل منطقي
-from db import repo
-from db import client as db_client
-from auth import CurrentUser, get_current_user, try_get_current_user, require_session_access
+print('✅ imports OK')
 
-# ── استيراد pipeline العقود ──────────────────────────────────────────────────
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "contracts"))
-import contract_pipeline as cp
+# ── Keys (من متغيرات البيئة — املأيها في .env، وليس هنا) ───────────────────
+OPENROUTER_KEY = os.environ.get("OPENROUTER_KEY", "")
+QDRANT_URL = os.environ.get("QDRANT_URL", "")
+QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY", "")
 
+MUFFAKIR_MODEL = "mohamed2811/Muffakir_Embedding_V2"
+LLM_MODEL = "openai/gpt-4o-mini"
 
-# ── إعداد التطبيق ────────────────────────────────────────────────────────────
-app = FastAPI(title="Muhakem — Legal AI Platform", version="3.0.0")
+# ── Collection Names ─────────────────────────────────────────────────────────
+COL_LAWS = "laws_only"
+COL_LAWS2 = "laws_with_commentary"
+COL_CASSATION = "cassation_rulings_muffaker_pure"
+COL_QA = "legal_qa"
+COL_MEMOS = "defense_memos"
 
-CORS_ORIGINS = os.environ.get("CORS_ORIGINS", "*")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[CORS_ORIGINS] if CORS_ORIGINS != "*" else ["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+SCORE_THRESHOLD = 0.45
 
-
-# ── تعريف الأقسام الخمسة الحقيقية (بترتيب ظهورها في القالب) ─────────────────
-SECTION_ANCHORS = [
-    ("waqai", "أولاً: وقائع الدعوى", r"(?:أولاً|أولا)[:\s]*وقائع\s+الدعوى"),
-    ("difa_shakliya", "ثانياً: الدفوع الشكلية", r"(?:ثانياً|ثانيًا)[:\s]*الدفوع\s+الشكلية"),
-    ("difa_mawdoiya", "ثالثاً: الدفوع الموضوعية", r"(?:ثالثاً|ثالثًا)[:\s]*الدفوع\s+الموضوعية"),
-    ("talabat_khitamiya", "رابعاً: الطلبات الختامية", r"(?:رابعاً|رابعًا)[:\s]*الطلبات\s+الختامية"),
-    ("talabat_ijraiya", "خامساً: الطلبات الإجرائية المصاحبة", r"(?:خامساً|خامسًا)[:\s]*الطلبات\s+الإجرائية(?:\s+المصاحبة)?"),
-]
-SECTION_IDS = [s[0] for s in SECTION_ANCHORS]
-SECTION_TITLES = {s[0]: s[1] for s in SECTION_ANCHORS}
-# الأقسام الخمسة كلها إلزامية بنص القاعدة 13 في build_system_prompt — مفيش
-# قسم "اختياري" ينفع يتمسح بالكامل من الشات.
-MANDATORY_SECTION_IDS = set(SECTION_IDS)
+# ── Lazy initialization — لا نحمل حاجة في وقت الاستيراد ────────────────
+_embedder: SentenceTransformer | None = None
+_qdrant: QdrantClient | None = None
+_llm: OpenAI | None = None
+_pipeline_ready = False
 
 
-def split_memo_into_sections(memo: str) -> tuple[str, list[dict]]:
-    """
-    يرجع (header, sections):
-    - header: كل النص قبل قسم "أولاً" (بسم الله + ديباجة المذكرة).
-    - sections: list of {id, title, body} بترتيب القالب.
-    بيستخدم نفس دالة التنظيف اللي الـ validators شغالة بيها
-    (pipeline._clean_memo_for_parsing) عشان الأقسام المستخرجة هنا تبقى
-    متطابقة مع اللي الـ validators بتشوفه.
-    """
-    cleaned = pipeline._clean_memo_for_parsing(memo)
+def _ensure_pipeline():
+    """يحمّل الموارد (embedder, qdrant, llm) أول مرة بس.
+    لو فشل حاجة، السيرفر يشتغل عادي والموارد تبقى None."""
+    global _embedder, _qdrant, _llm, _pipeline_ready
+    if _pipeline_ready:
+        return
+    _pipeline_ready = True  # نمنع إعادة المحاولة حتى restart
 
-    matches = []
-    search_from = 0
-    for sec_id, title, pattern in SECTION_ANCHORS:
-        m = re.search(pattern, cleaned[search_from:])
-        if not m:
-            matches.append((sec_id, title, None, None))
-            continue
-        start_of_header = search_from + m.start()
-        end_of_header = search_from + m.end()
-        matches.append((sec_id, title, start_of_header, end_of_header))
-        search_from = end_of_header
+    # 1) Embedder
+    try:
+        print("Loading embedding model...")
+        _embedder = SentenceTransformer(MUFFAKIR_MODEL, trust_remote_code=True)
+        print("✅ Embedder loaded")
+    except Exception as e:
+        print(f"⚠️ Embedder فشل: {e}")
 
-    first_start = next((m[2] for m in matches if m[2] is not None), len(cleaned))
-    header = cleaned[:first_start].strip()
+    # 2) Qdrant
+    try:
+        if QDRANT_URL and QDRANT_API_KEY:
+            _qdrant = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY, port=443, timeout=30, check_compatibility=False)
+            print("✅ Qdrant connected")
+            cols = _qdrant.get_collections().collections
+            print(f"📦 Collections: {', '.join(c.name for c in cols)}")
+        else:
+            print("⚠️ QDRANT_URL أو QDRANT_API_KEY مش متوفرين")
+    except Exception as e:
+        print(f"⚠️ Qdrant فشل: {e}")
 
-    sections = []
-    for i, (sec_id, title, _, body_start) in enumerate(matches):
-        if body_start is None:
-            sections.append({"id": sec_id, "title": title, "body": ""})
-            continue
-        next_start = next(
-            (matches[j][2] for j in range(i + 1, len(matches)) if matches[j][2] is not None),
-            len(cleaned),
+    # 3) LLM
+    try:
+        if OPENROUTER_KEY:
+            _llm = OpenAI(api_key=OPENROUTER_KEY, base_url="https://openrouter.ai/api/v1")
+            print("✅ LLM client ready")
+        else:
+            print("⚠️ OPENROUTER_KEY مش متوفر")
+    except Exception as e:
+        print(f"⚠️ LLM client فشل: {e}")
+
+
+def embed(text: str) -> list[float]:
+    _ensure_pipeline()
+    if not _embedder:
+        raise RuntimeError("Embedder مش متحمّل — تأكد من متطلبات النظام")
+    return _embedder.encode([text], normalize_embeddings=True)[0].tolist()
+
+
+def llm_text(messages: list[dict], temperature: float = 0.2, max_tokens: int = 1000,
+             model: str | None = None, retries: int = 1) -> str:
+    """نداء موحّد لأي completion من الـ LLM، بيتأكد إن الرد فيه نص فعلي قبل
+    ما يرجّعه. أحيانًا OpenRouter بيرجّع content=None (تعطل مؤقت من المزوّد،
+    أو رفض ضمني) — من غير الفحص ده، أي كود بيستخدم .strip() على الرد بيكسر
+    فورًا برسالة غامضة 'NoneType' object has no attribute 'strip'. هنا بنعمل
+    retry واحد تلقائي، ولو لسه فاضي بنرفع خطأ واضح بدل الكراش الصامت."""
+    _ensure_pipeline()
+    if not _llm:
+        raise RuntimeError("LLM مش متاح — تأكد من OPENROUTER_KEY في ملف .env")
+
+    last_content = None
+    for attempt in range(retries + 1):
+        response = _llm.chat.completions.create(
+            model=model or LLM_MODEL, messages=messages,
+            temperature=temperature, max_tokens=max_tokens,
         )
-        body = cleaned[body_start:next_start].strip()
-        sections.append({"id": sec_id, "title": title, "body": body})
+        choice = response.choices[0] if response.choices else None
+        content = choice.message.content if choice and choice.message else None
+        if content is not None and content.strip():
+            return content.strip()
+        last_content = content
 
-    return header, sections
-
-
-def reconstruct_memo(header: str, sections: list[dict]) -> str:
-    """يعيد بناء نص المذكرة الكامل من header + sections — مستخدم بعد أي تعديل
-    (save يدوي أو chat-edit) عشان الـ validators تشتغل على النص الكامل الصحيح."""
-    parts = [header.strip()]
-    for s in sections:
-        parts.append(s["title"])
-        parts.append(s["body"].strip())
-    return "\n\n".join(p for p in parts if p)
+    raise RuntimeError(
+        "لم يرجّع نموذج الذكاء الاصطناعي ردًا نصيًا بعد إعادة المحاولة — "
+        "غالبًا تعطل مؤقت من مزوّد الـ API (OpenRouter). جرّبي تاني بعد شوية."
+        + (f" [finish_reason: {choice.finish_reason}]" if choice and last_content is None else "")
+    )
 
 
-def extract_case_metadata(case_facts: str, crime_type: str | None,
-                           legal_nature: str | None) -> dict:
-    """بيسحب اسم المتهم/التهمة/رقم القضية/المحكمة من نص case_facts المنسّق
-    (نفس الصيغة اللي build_case_facts في pipeline.py بيطلعها) — من غير ما
-    يلمس pipeline.py نفسه."""
-    def grab(label: str) -> Optional[str]:
-        m = re.search(rf"{label}\s*:\s*(.+)", case_facts)
-        if not m:
-            return None
-        val = m.group(1).strip()
-        return None if val.startswith("[") else val
+CRIME_CATEGORIES = {
+    "مخدرات": "قضايا حيازة أو اتجار مواد مخدرة حشيش هيروين كوكايين حبوب تخديرية",
+    "سلاح وذخيره": "قضايا حيازة أسلحة نارية ذخيرة مسدس بندقية سلاح أبيض بدون ترخيص",
+    "تزوير وتقليد": "قضايا تزوير محررات رسمية أو عرفية أو توقيعات أو أختام أو عملة",
+    "جرائم اقتصاديه ونصب": "قضايا نصب واحتيال غسيل أموال رشوة شيكات بدون رصيد",
+    "خيانة الأمانة": "قضايا خيانة أمانة تبديد أموال أو منقولات إيصال أمانة على بياض عقد وديعة أو وكالة أو عارية استيلاء على مبالغ مالية مؤتمن عليها",
+    "قتل ومحاولة قتل عمد": "قضايا قتل عمد أو شبه عمد ضرب مبرح إصابات خطيرة طعن بالسكين إطلاق نار بقصد الإيذاء",
+    "قتل خطأ وحوادث سيارات": "قضايا قتل خطأ أو إصابة خطأ نتيجة حادث سيارة أو قيادة بتهور أو رعونة أو تصادم مروري",
+    "سرقة وسطو": "قضايا سرقة بالإكراه أو بدون إكراه سطو مسلح سلب انتهاك حرمة منزل أو محل تجاري نشل",
+    "جرائم تقنيه معلومات": "قضايا اختراق مواقع أو حسابات هكر ابتزاز إلكتروني جرائم إنترنت تزوير إلكتروني",
+    "جرائم اخلاقيه": "قضايا خدش الحياء فعل فاضح دعارة إباحية تحرش",
+    "تهريب مهاجرين": "قضايا تهريب بشر أو لاجئين هجرة غير شرعية عبر الحدود",
+    "الإضرار والبلاغات": "بلاغ كاذب إهانة موظف عام حرق متعمد تخريب ممتلكات تعطيل مصالح",
+    "غش تجاري وتموين": "قضايا غش تجاري تقليد سلع تموينية غش أغذية نقص أوزان عدم مطابقة مواصفات قياسية تعبئة بدون ترخيص",
+}
+
+# ── 4.2 الطبيعة القانونية (عمدي / غير عمدي) لكل فئة ─────────────────────
+CRIME_LEGAL_NATURE = {
+    "مخدرات": "عمدي",
+    "سلاح وذخيره": "عمدي",
+    "تزوير وتقليد": "عمدي",
+    "جرائم اقتصاديه ونصب": "عمدي",
+    "خيانة الأمانة": "عمدي",
+    "قتل ومحاولة قتل عمد": "عمدي",
+    "قتل خطأ وحوادث سيارات": "غير عمدي",
+    "سرقة وسطو": "عمدي",
+    "جرائم تقنيه معلومات": "عمدي",
+    "جرائم اخلاقيه": "عمدي",
+    "تهريب مهاجرين": "عمدي",
+    "الإضرار والبلاغات": "عمدي",
+    "غش تجاري وتموين": "عمدي",
+}
+
+# ── 4.3 توجيه الركن المعنوي حسب الطبيعة ──────────────────────────────────
+NATURE_GUIDANCE = {
+    "عمدي": (
+        "هذه جريمة عمدية: الركن المعنوي المطلوب هو القصد الجنائي (العام والخاص). "
+        "الدفع الصحيح في الأركان هو 'انتفاء القصد الجنائي'. لا تستخدم عبارات مثل "
+        "'انتفاء ركن الخطأ' أو 'استغراق خطأ المجني عليه' — هذه مصطلحات خاصة بالجرائم غير العمدية فقط."
+    ),
+    "غير عمدي": (
+        "⚠️ هذه جريمة غير عمدية (كالقتل الخطأ أو الإصابة الخطأ): القانون يفترض سلفاً "
+        "غياب القصد الجنائي فيها، فالركن المعنوي هو 'الخطأ' (إهمال، رعونة، عدم احتراز, "
+        "عدم مراعاة القوانين واللوائح) وليس القصد. **ممنوع تماماً** كتابة عبارة 'انتفاء "
+        "القصد الجنائي' لأنها هلوسة قانونية هنا (لا معنى لنفي قصد الجريمة أصلاً لا تشترطه). "
+        "الدفع الموضوعي الصحيح هو: 'انتفاء ركن الخطأ في جانب المتهم' و/أو "
+        "'انقطاع رابطة السببية' و/أو 'استغراق خطأ المجني عليه لخطأ المتهم'."
+    ),
+}
+
+# ── 4.4 كلمات مفتاحية مرجّحة لكل فئة ─────────────────────────────────────
+CRIME_KEYWORDS_WEIGHTED = {
+    "مخدرات": {
+        "مخدر": 10, "حشيش": 10, "هيروين": 10, "كوكايين": 10, "بانجو": 10, "ترامادول": 9,
+        "جوهر مخدر": 9, "الاتجار في المخدر": 10, "الاتجار في مواد مخدرة": 10,
+        "إحراز مخدرات": 10, "الاتجار": 1,
+    },
+    "سلاح وذخيره": {
+        "سلاح ناري": 10, "سلاح أبيض": 9, "ذخيرة": 9, "بندقية": 9, "مسدس": 9,
+        "حيازة سلاح": 9, "أسلحة وذخائر": 9,
+    },
+    "تزوير وتقليد": {
+        "تزوير": 8, "تقليد": 6, "محرر رسمي": 8, "محرر عرفي": 8, "توقيع مزور": 10,
+        "ختم مزور": 9, "عملة مزيفة": 9,
+    },
+    "جرائم اقتصاديه ونصب": {
+        "نصب": 8, "احتيال": 7, "غسيل أموال": 9, "شيك بدون رصيد": 10, "رشوة": 9,
+    },
+    "خيانة الأمانة": {
+        "خيانة أمانة": 10, "تبديد": 8, "إيصال أمانة": 9,
+        "عقد وديعة": 8, "عقد وكالة": 7, "اختلاس": 8,
+    },
+    "قتل ومحاولة قتل عمد": {
+        "قتل عمد": 10, "شروع في قتل": 10, "ضرب مبرح": 8, "طعن بالسكين": 9, "إطلاق نار عمداً": 9,
+    },
+    "قتل خطأ وحوادث سيارات": {
+        "قتل خطأ": 10, "إصابة خطأ": 9, "حادث سيارة": 8, "حادث تصادم": 8, "رعونة": 7,
+        "قيادة مركبة": 6, "تصادم مروري": 8,
+    },
+    "سرقة وسطو": {
+        "سرقة بالإكراه": 10, "سرقة بالتهديد": 10, "سرقة": 6, "سطو": 8, "سلب": 7,
+        "نشل": 8, "انتهاك حرمة منزل": 8,
+    },
+    "جرائم تقنيه معلومات": {
+        "اختراق": 8, "هكر": 8, "ابتزاز إلكتروني": 10, "جريمة معلوماتية": 9, "جرائم إنترنت": 8,
+    },
+    "جرائم اخلاقيه": {
+        "خدش حياء": 10, "فعل فاضح": 9, "دعارة": 9, "تحرش": 8,
+    },
+    "تهريب مهاجرين": {
+        "تهريب بشر": 10, "هجرة غير شرعية": 9,
+    },
+    "الإضرار والبلاغات": {
+        "بلاغ كاذب": 10, "إهانة موظف عام": 9, "حريق عمد": 9, "تخريب ممتلكات": 8,
+    },
+    "غش تجاري وتموين": {
+        "سلع مغشوشة": 10, "غش تجاري": 10, "ناقصة الأوزان": 9, "مجهولة المصدر": 6,
+        "سلع تموينية": 9, "مواصفات قياسية": 8, "تعبئة بدون ترخيص": 9,
+        "غش الأغذية": 9, "سلعة تموينية مدعمة": 9, "الاتجار": 1,
+    },
+}
+
+# ── 4.5 توسيع الاستعلام القانوني حسب نوع الجريمة ─────────────────────────
+LAW_QUERY_EXPANSION = {
+    "مخدرات": "تفتيش ضبط إذن النيابة حيازة مخدرات قانون مكافحة المخدرات",
+    "سلاح وذخيره": "حيازة سلاح ترخيص ضبط تفتيش قانون الأسلحة والذخائر",
+    "تزوير وتقليد": "تزوير محررات عقوبة جريمة قانون العقوبات",
+    "جرائم اقتصاديه ونصب": "نصب احتيال غسيل أموال عقوبة جريمة مالية قانون العقوبات",
+    "خيانة الأمانة": "خيانة أمانة تبديد إيصال أمانة عقد وديعة قانون العقوبات",
+    "قتل ومحاولة قتل عمد": "قصد الإجرام موانع الإثبات الاعتراف الدفاع الشرعي قانون العقوبات",
+    "قتل خطأ وحوادث سيارات": "قتل خطأ إصابة خطأ خطأ المجني عليه استغراق الخطأ قانون المرور قانون العقوبات",
+    "سرقة وسطو": "سرقة بالإكراه تفتيش الشخص إثبات نسبة الجريمة قانون العقوبات",
+    "جرائم تقنيه معلومات": "جرائم معلوماتية قانون تقنية اختراق قانون الجرائم الإلكترونية",
+    "جرائم اخلاقيه": "جريمة أخلاقية عقوبة فعل فاضح قانون العقوبات",
+    "تهريب مهاجرين": "تهريب بشر هجرة غير شرعية قانون مكافحة تهريب المهاجرين",
+    "الإضرار والبلاغات": "بلاغ كاذب إهانة موظف عام حرق متعمد قانون العقوبات",
+    "غش تجاري وتموين": "غش تجاري قانون حماية المستهلك التموين تفتيش إداري ضبط تجاري",
+}
+
+
+# ── 4.6 دوال التصنيف ───────────────────────────────────────────────────────
+
+def detect_crime_type_weighted(text: str) -> dict:
+    """ترجع dict فيه score كل فئة بناءً على الكلمات المرجّحة."""
+    scores = {}
+    for cat, kws in CRIME_KEYWORDS_WEIGHTED.items():
+        scores[cat] = sum(w for kw, w in kws.items() if kw in text)
+    return scores
+
+
+def detect_crime_type_llm(charge_text: str, case_facts: str) -> str | None:
+    categories_list = "\n".join(f"- {k}: {v}" for k, v in CRIME_CATEGORIES.items())
+    prompt = f"""أنت مصنّف قانوني دقيق جداً. مهمتك تحديد هل "جوهر" هذه القضية يطابق
+إحدى الفئات التالية **تماماً**، أم أنه جريمة مختلفة تماماً غير مذكورة.
+
+{categories_list}
+
+⚠️ قاعدة صارمة: لا تختاري أقرب فئة تشبه القضية — اختاري فئة فقط لو كانت
+التهمة الأساسية والقانون المخالف يطابقان الفئة فعلياً. لو التهمة الأساسية
+تتعلق بقانون أو نشاط مختلف تماماً (مثل قانون عمل، قانون بيئة، قانون ضرائب،
+تراخيص مهنية) ولا توجد فئة تطابقه، أخرجي "غير محدد" ولا تجبري نفسك على
+اختيار الأقرب شكلاً.
+
+أمثلة على الإجابة الصحيحة "غير محدد":
+- "مزاولة نشاط إلحاق عمالة دون ترخيص من وزارة العمل" ← غير محدد (قانون عمل، ليس نصباً ولا تزويراً رغم ذكر عقود وهمية)
+- "مخالفة قانون البيئة بالتخلص من مخلفات خطرة" ← غير محدد
+- "التهرب الضريبي بإخفاء إيرادات" ← غير محدد (ما لم يذكر تزوير مستندات صراحة كجوهر التهمة)
+
+التهمة: {charge_text}
+وقائع القضية (مختصر): {case_facts[:800]}
+
+أخرجي فقط اسم الفئة بالحرف تماماً كما ورد أعلاه إذا كانت تطابق الجوهر فعلياً،
+أو "غير محدد" لو الجوهر قانون أو نشاط مختلف — بدون أي شرح إضافي."""
+
+    try:
+        result = llm_text([{"role": "user", "content": prompt}], temperature=0.0, max_tokens=30)
+    except RuntimeError:
+        return None
+    return result if result in CRIME_CATEGORIES else None
+
+
+def detect_crime_type_semantic(case_facts: str, threshold: float = 0.45) -> str | None:
+    """Fallback أخير: مقارنة cosine similarity بين الوقائع ووصف كل فئة."""
+    fact_vec = embed(case_facts)
+    categories = list(CRIME_CATEGORIES.keys())
+    descriptions = list(CRIME_CATEGORIES.values())
+    _ensure_pipeline()
+    if not _embedder:
+        return None
+    cat_vecs = _embedder.encode(descriptions, normalize_embeddings=True)
+    similarities = np.dot(cat_vecs, fact_vec)
+    best_idx = int(np.argmax(similarities))
+    best_score = float(similarities[best_idx])
+    if best_score < threshold:
+        return None
+    return categories[best_idx]
+
+
+def detect_crime_type(charge_text: str, case_facts: str = "") -> tuple[str | None, str]:
+    full_text = charge_text + " " + case_facts[:500]
+    scores = detect_crime_type_weighted(full_text)
+    sorted_scores = sorted(scores.items(), key=lambda x: -x[1])
+    top_cat, top_score = sorted_scores[0]
+    second_score = sorted_scores[1][1] if len(sorted_scores) > 1 else 0
+
+    if top_score >= 15 and top_score > second_score * 2.5:
+        return top_cat, "keyword:confident"
+
+    if top_score > 0:
+        llm_result = detect_crime_type_llm(charge_text, case_facts)
+        if llm_result:
+            return llm_result, "llm:disambiguation"
+        return None, "llm:unclassified"
+
+    sem = detect_crime_type_semantic(charge_text)
+    if sem:
+        return sem, "semantic:fallback"
+    if case_facts:
+        sem2 = detect_crime_type_semantic(case_facts[:1500])
+        if sem2:
+            return sem2, "semantic:facts_fallback"
+    return None, "none"
+
+
+ARABIC_ORDINALS = {
+    "الأولى": 1, "الثانية": 2, "الثالثة": 3, "الرابعة": 4, "الخامسة": 5,
+    "السادسة": 6, "السابعة": 7, "الثامنة": 8, "التاسعة": 9, "العاشرة": 10,
+    "الحادية عشرة": 11, "الثانية عشرة": 12, "الثالثة عشرة": 13,
+    "الرابعة عشرة": 14, "الخامسة عشرة": 15, "السادسة عشرة": 16,
+    "السابعة عشرة": 17, "الثامنة عشرة": 18, "التاسعة عشرة": 19,
+    "العشرون": 20,
+}
+
+
+def extract_article_num(payload: dict) -> str:
+    """استخراج رقم المادة: أرقام صريحة، article_id بالحروف، أو من chunk_id/article_ref."""
+    aid = payload.get("article_id", "")
+    m = re.search(r'مادة\s*(\d+)', aid)
+    if m:
+        return m.group(1)
+    for word, num in ARABIC_ORDINALS.items():
+        if word in aid:
+            return str(num)
+
+    for field in ("article_ref", "chunk_id"):
+        val = payload.get(field, "")
+        m = re.search(r'مادة_(\d+)', val)
+        if m:
+            return m.group(1)
+
+    text = payload.get("contextual_text", "")
+    m = re.search(r'مادة\s*(\d+)', text)
+    if m:
+        return m.group(1)
+    for word, num in ARABIC_ORDINALS.items():
+        if word in text:
+            return str(num)
+
+    return ""
+
+
+def clean_law_content(text: str) -> str:
+    """تنظيف نص القانون من الزخارف والمسافات الزائدة."""
+    if not text:
+        return ""
+    cleaned = re.sub(r'[ \t]{2,}', ' ', text)
+    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+    return cleaned.strip()
+
+
+def retrieve(query: str, collection: str, top_k: int = 5,
+             crime_type_filter: str | None = None) -> list[dict]:
+    try:
+        vec = embed(query)
+        _ensure_pipeline()
+        if not _qdrant:
+            return []
+        results = _qdrant.query_points(
+            collection_name=collection, query=vec,
+            limit=top_k * 3, with_payload=True
+        ).points
+
+        hits = []
+        for r in results:
+            if r.score < SCORE_THRESHOLD:
+                continue
+
+            payload = r.payload or {}
+
+            if collection == COL_LAWS2 and payload.get("chunk_type") not in ("jurist_commentary", "explanatory_memo"):
+                continue
+
+            raw_content = payload.get("content") or payload.get("text", "")
+            clean_content = clean_law_content(raw_content) if collection in (COL_LAWS, COL_LAWS2) else raw_content
+            title = payload.get("title") or payload.get("document_title", "")
+
+            if collection in (COL_LAWS, COL_LAWS2):
+                art_num = payload.get("article_number")
+                article_num = str(art_num) if art_num is not None else extract_article_num(payload)
+            else:
+                article_num = ""
+
+            if crime_type_filter and collection in (COL_MEMOS, COL_CASSATION):
+                if crime_type_filter not in payload.get("crime_type", ""):
+                    continue
+
+            hits.append({
+                "score": round(r.score, 4),
+                "content": clean_content,
+                "title": title or payload.get("source_file", ""),
+                "article_num": article_num,
+                "metadata": {
+                    k: v for k, v in payload.items()
+                    if k not in ("content", "text", "title", "document_title")
+                },
+            })
+            if len(hits) >= top_k:
+                break
+        return hits
+
+    except Exception as e:
+        print(f"⚠️  retrieve error [{collection}]: {e}")
+        return []
+
+
+def smart_retrieve_all(case_facts: str, top_k_cassation: int = 4,
+                        top_k_laws: int = 4, top_k_memos: int = 3) -> dict:
+    charge_match = re.search(r"نوع الجريمة\s*:\s*(.+)", case_facts)
+    charge_text = charge_match.group(1).strip() if charge_match else case_facts
+
+    crime_type, detection_method = detect_crime_type(charge_text, case_facts)
+    legal_nature = CRIME_LEGAL_NATURE.get(crime_type)
+    law_expansion = LAW_QUERY_EXPANSION.get(crime_type, "")
+    print(f"🏷️  نوع الجريمة المكتشف: {crime_type or 'غير محدد'}  "
+          f"(الطريقة: {detection_method})  |  الطبيعة: {legal_nature or 'غير محددة'}")
+
+    cassation = retrieve(case_facts, COL_CASSATION, top_k_cassation, crime_type_filter=crime_type)
+    if not cassation and crime_type:
+        cassation = retrieve(case_facts, COL_CASSATION, top_k_cassation, crime_type_filter=None)
+
+    law_query = case_facts + (f"\n{law_expansion}" if law_expansion else "")
+    laws = retrieve(law_query, COL_LAWS, top_k_laws)
+    laws2 = retrieve(law_query, COL_LAWS2, top_k_laws)
+
+    qa = retrieve(case_facts, COL_QA, 2)
+
+    memo_query = case_facts + (f"\nنوع الجريمة: {crime_type}" if crime_type else "")
+    memos = retrieve(memo_query, COL_MEMOS, top_k_memos, crime_type_filter=crime_type)
+    if not memos and crime_type:
+        memos = retrieve(memo_query, COL_MEMOS, top_k_memos, crime_type_filter=None)
 
     return {
-        "defendant_name": grab("اسم المتهم"),
-        "charge": grab("نوع الجريمة"),
-        "case_number": grab("رقم القضية"),
-        "court": grab("المحكمة"),
-        "crime_type": crime_type,
-        "legal_nature": legal_nature,
+        "cassation": cassation, "laws": laws, "laws2": laws2, "qa": qa, "memos": memos,
+        "crime_type": crime_type, "legal_nature": legal_nature,
     }
 
 
-def override_case_facts_fields(case_facts: str, case_number: str | None,
-                                court: str | None) -> str:
-    """لو المحامية دخلت رقم قضية/محكمة صريح من الفرونت، بيحل محل اللي
-    استُخرج تلقائياً من كلامها الحر قبل ما يدخل التوليد."""
-    if case_number:
-        case_facts = re.sub(r"(رقم القضية\s*:\s*).+", lambda m: m.group(1) + case_number, case_facts)
-    if court:
-        case_facts = re.sub(r"(المحكمة\s*:\s*).+", lambda m: m.group(1) + court, case_facts)
+def debug_retrieval(case_facts: str) -> dict:
+    """طباعة تفصيلية لنتائج الاسترجاع من كل collection."""
+    print("=" * 70)
+    retrieved = smart_retrieve_all(case_facts)
+
+    for col_name, hits in [
+        (COL_CASSATION, retrieved["cassation"]),
+        (COL_LAWS, retrieved["laws"]),
+        (COL_QA, retrieved["qa"]),
+        (COL_MEMOS, retrieved["memos"]),
+    ]:
+        print(f"\n📂 {col_name}  → {len(hits)} نتيجة")
+        if not hits:
+            print("   ⚠️  مفيش نتائج كافية")
+            continue
+        for i, h in enumerate(hits, 1):
+            print(f"\n   [{i}] score={h['score']}")
+            if h["title"]:
+                print(f"       title      : {h['title'][:80]}")
+            if h["article_num"]:
+                print(f"       article_num: مادة {h['article_num']}")
+            ct = h["metadata"].get("crime_type", "")
+            if ct:
+                print(f"       crime_type : {ct}")
+            print(f"       content    : {h['content'][:300]}")
+            print("       " + "-" * 60)
+
+    print("\n" + "=" * 70)
+    return retrieved
+
+
+def _safe_str(value, default: str = "") -> str:
+    """intake.get(key, default) ما بيطبّقش الـ default لو المفتاح موجود
+    بقيمة None صراحة (بيحصل لما الـ LLM يرجّع JSON فيه null) — الدالة دي
+    بتضمن رجوع str دايمًا عشان .strip() بعدها ميكسرش على NoneType."""
+    return value if isinstance(value, str) else default
+
+
+def build_case_facts(intake: dict) -> str:
+    """تحويل dict بيانات القضية لـ نص منظم جاهز للـ pipeline."""
+    lines = []
+
+    lines.append("═══ بيانات القضية الأساسية ═══")
+    lines.append(f"اسم المتهم     : {intake.get('defendant_name', '[غير محدد]')}")
+    lines.append(f"نوع الجريمة    : {intake.get('charge', '[غير محددة]')}")
+    lines.append(f"رقم القضية     : {intake.get('case_number', '[غير متاح]')}")
+    lines.append(f"المحكمة        : {intake.get('court', '[غير محددة]')}")
+    lines.append(f"تاريخ الواقعة  : {intake.get('incident_date', '[غير محدد]')}")
+
+    lines.append("\n═══ وقائع الضبط والقبض ═══")
+    lines.append(f"طريقة الضبط    : {intake.get('arrest_method', '[غير موضح]')}")
+    lines.append(f"مكان الضبط     : {intake.get('arrest_location', '[غير موضح]')}")
+    lines.append(f"وقت الضبط      : {intake.get('arrest_time', '[غير موضح]')}")
+
+    has_warrant = intake.get('search_warrant')
+    warrant_detail = intake.get('search_warrant_detail', '')
+    if has_warrant is not None:
+        warrant_str = "نعم" if has_warrant else "لا — لم يصدر إذن تفتيش مسبق"
+        lines.append(f"إذن التفتيش    : {warrant_str}")
+        if warrant_detail:
+            lines.append(f"تفاصيل الإذن   : {warrant_detail}")
+
+    has_arrest_warrant = intake.get('arrest_warrant')
+    if has_arrest_warrant is not None:
+        lines.append(f"أمر القبض      : {'نعم' if has_arrest_warrant else 'لا — قبض بدون أمر قضائي'}")
+
+    lines.append(f"الجهة المُنفِّذة: {intake.get('arresting_authority', '[غير محدد]')}")
+
+    lines.append("\n═══ رواية الضابط / محضر الضبط ═══")
+    lines.append(_safe_str(intake.get('officer_account')).strip() or "[لم تُدرَج]")
+
+    lines.append("\n═══ رواية الموكل / الدفاع ═══")
+    lines.append(_safe_str(intake.get('client_account')).strip() or "[لم تُدرَج]")
+
+    contradictions = intake.get('contradictions', [])
+    if contradictions:
+        lines.append("\n═══ تناقضات وثغرات في الاتهام ═══")
+        for i, c in enumerate(contradictions, 1):
+            lines.append(f"  {i}. {c}")
+
+    evidence = intake.get('physical_evidence', [])
+    if evidence:
+        lines.append("\n═══ الأدلة المادية ═══")
+        for e in evidence:
+            lines.append(f"  • {e}")
+
+    witnesses = intake.get('witnesses', [])
+    if witnesses:
+        lines.append("\n═══ الشهود ═══")
+        for w in witnesses:
+            lines.append(f"  • {w}")
+
+    if intake.get('prior_record'):
+        lines.append(f"\n═══ السوابق الجنائية ═══\n{intake['prior_record']}")
+    if intake.get('extra_notes'):
+        lines.append(f"\n═══ ملاحظات المحامي الإضافية ═══\n{intake['extra_notes']}")
+
+    return "\n".join(lines)
+
+
+INTAKE_EXTRACTION_SCHEMA = """
+{
+  "defendant_name": "اسم المتهم أو null",
+  "charge": "نص التهمة كما ورد",
+  "case_number": "رقم القضية أو null",
+  "court": "اسم المحكمة أو null",
+  "incident_date": "تاريخ الواقعة أو null",
+  "arrest_method": "طريقة الضبط أو null",
+  "arrest_location": "مكان الضبط أو null",
+  "arrest_time": "وقت الضبط أو null",
+  "search_warrant": "نص إذن التفتيش لو موجود، أو false لو صريح إنه مش موجود، أو null لو غير مذكور",
+  "arrest_warrant": true أو false أو null,
+  "arresting_authority": "الجهة التي قامت بالضبط أو null",
+  "officer_account": "رواية الضابط/محضر الضبط كاملة كما وردت",
+  "client_account": "رواية المتهم/الموكل كاملة كما وردت",
+  "contradictions": ["قائمة بالتناقضات والثغرات كما وردت في النص، كل تناقض عنصر منفصل"],
+  "physical_evidence": ["قائمة الأدلة المادية المذكورة"],
+  "witnesses": ["قائمة الشهود أو الإشارة لغيابهم"],
+  "prior_record": "السوابق الجنائية أو null",
+  "extra_notes": "أي ملاحظات إضافية أو نقاط دفاع ذكرها المحامي"
+}
+"""
+
+
+def extract_intake_from_freetext(user_text: str) -> dict:
+    """
+    تأخذ كلام المحامي الحر وتستخرج منه dict بنفس شكل الـ intake.
+    أي حقل مش مذكور يتسيب null — ما تخترعش بيانات غير موجودة.
+    """
+    extraction_prompt = f"""أنت مساعد قانوني متخصص في استخراج البيانات المهيكلة من نصوص القضايا الجنائية.
+
+اقرأ النص التالي الذي كتبه محامٍ يصف قضية جنائية، واستخرج منه البيانات في صيغة JSON بالضبط بهذا الشكل:
+{INTAKE_EXTRACTION_SCHEMA}
+
+⚠️ قواعد صارمة:
+1. لا تخترع أي معلومة غير مذكورة صراحة أو ضمناً في النص — استخدم null للحقول الغائبة.
+2. انسخ الوقائع (officer_account, client_account) بأسلوب المحامي نفسه دون تلخيص أو حذف تفاصيل.
+3. contradictions لازم تكون قائمة، كل عنصر تناقض أو ثغرة واحدة وردت في النص.
+4. أخرج JSON فقط بدون أي شرح أو نص إضافي قبله أو بعده.
+
+نص القضية:
+{user_text}
+"""
+    raw = llm_text([{"role": "user", "content": extraction_prompt}],
+                    temperature=0.0, max_tokens=2000)
+    raw = re.sub(r"^```json|```$", "", raw, flags=re.MULTILINE).strip()
+    try:
+        intake = json.loads(raw)
+    except Exception as e:
+        print(f"⚠️ فشل استخراج JSON من كلام اليوزر: {e}")
+        print(f"الرد الخام:\n{raw[:500]}")
+        return {}
+    return intake
+
+
+def build_case_from_freetext(user_text: str) -> str:
+    """
+    الدالة الموحّدة: تأخذ كلام المحامي الحر وترجع case_facts جاهزة
+    تدخل مباشرة في draft_defense_memo.
+    """
+    intake = extract_intake_from_freetext(user_text)
+    if not intake:
+        raise ValueError("فشل استخراج بيانات القضية من النص المدخل — راجعي النص المدخل.")
+    case_facts = build_case_facts(intake)
+    print(f"📋 تم استخراج بيانات القضية تلقائياً (طول case_facts: {len(case_facts)} حرف)")
+    print(f"🔍 التهمة المستخرجة: {intake.get('charge', '[غير محددة]')}")
     return case_facts
 
 
-def apply_lawyer_info(memo: str, lawyer_name: str | None, lawyer_license: str | None) -> str:
-    """استبدال cosmetic بس لاسم/رقم قيد المحامي في تذييل المذكرة — بعد ما
-    الـ validation خلص، ومش بيأثر على أي فحص قانوني."""
-    if lawyer_name:
-        memo = memo.replace("[اسم المحامي]", lawyer_name)
-    if lawyer_license:
-        memo = memo.replace(
-            "المقيد بنقابة المحامين المصريين",
-            f"المقيد بنقابة المحامين المصريين برقم {lawyer_license}",
+def build_context_block(cassation, laws, qa, memos, laws2=None) -> str:
+    sections = []
+
+    if memos:
+        items = ""
+        for i, h in enumerate(memos):
+            meta = h.get("metadata", {})
+            header = f"  ◈ مثال {i + 1}"
+            if meta.get("crime_type"):
+                header += f" | نوع الجريمة: {meta.get('crime_type')}"
+            items += f"{header}\n{h['content'][:1200]}\n\n"
+        sections.append(
+            "【 مذكرات دفاع مشابهة — استوحِ منها **أسلوب** الصياغة والانتقالات فقط، "
+            "تجاهل تفاصيل الجريمة إن كانت مختلفة 】\n" + items
         )
-    return memo
+    else:
+        sections.append("【 مذكرات مشابهة 】\n  ⚠️ لا توجد.")
+
+    if cassation:
+        items = ""
+        for i, h in enumerate(cassation):
+            meta = h.get("metadata", {})
+            citation = ""
+            if meta.get("ruling_num") and meta.get("ruling_year"):
+                citation = f"(طعن رقم {meta['ruling_num']} لسنة {meta['ruling_year']}"
+                if meta.get("date"):
+                    citation += f" جلسة {meta['date']}"
+                citation += ")"
+            items += (f"  ◈ حكم {i + 1} {citation}:\n  العنوان: {h['title']}\n"
+                      f"  النص: {h['content'][:500]}\n\n")
+        sections.append(
+            "【 أحكام محكمة النقض — استخدمها للمبدأ القانوني العام المرتبط بالدفع فقط، "
+            "لا تستعير وقائعها التفصيلية 】\n" + items
+        )
+
+    if laws:
+        items = ""
+        for h in laws:
+            art = f"مادة {h['article_num']}" if h["article_num"] else h["title"]
+            items += f"  ◈ {art}:\n  {h['content'][:400]}\n\n"
+        sections.append("【 نصوص القوانين الرسمية — هي وحدها الملزمة قانوناً 】\n" + items)
+
+    if laws2:
+        items = ""
+        for h in laws2:
+            ct = h.get("metadata", {}).get("chunk_type", "")
+            items += f"  ◈ {h['title']} ({ct}):\n  {h['content'][:400]}\n\n"
+        sections.append(
+            "【 شروح ومذكرات إيضاحية — للفهم والسياق فقط، ⚠️ ليست نصاً قانونياً ملزماً، "
+            "ممنوع الاستشهاد بها كـ'مادة X' أو نسبة رقم مادة لها 】\n" + items
+        )
+
+    if qa:
+        sections.append("【 استشارات قانونية مشابهة 】\n"
+                        + "\n".join(f"  ◈ {h['content'][:250]}" for h in qa))
+
+    return "\n\n" + "─" * 60 + "\n\n".join(sections) + "\n" + "─" * 60
 
 
-def run_legal_checks(memo: str, crime_type: str | None, legal_nature: str | None,
-                      case_facts: str) -> list[str]:
-    """نفس الفحوصات الحتمية المستخدمة في validate_memo، بس subset مناسب
-    لتشغيله بعد كل تعديل شات (من غير إعادة الناقد الـ LLM الكامل عشان
-    السرعة) — الهدف إننا نلتقط أي مخالفة قانونية اتسببت فيها تعديل الشات."""
-    warnings: list[str] = []
-    warnings += pipeline.check_crime_type_contamination(memo, crime_type, case_facts)
-    warnings += pipeline.check_procedural_substantive_mixup(memo)
-    warnings += pipeline.check_procedural_in_substantive_section(memo)
-    warnings += pipeline.check_intent_vs_negligence_logic(memo, legal_nature)
-    warnings += pipeline.check_fewshot_leak(memo)
+FEW_SHOT_EXAMPLE = """
+─────────────────────────────────────────────────────────────────────────────
+مثال مختصر على أسلوب الهجوم القانوني (توضيحي فقط — ليس من مصادر هذه القضية)
+─────────────────────────────────────────────────────────────────────────────
+【 مثال دفع شكلي 】
+"دفع الحاضر عن المتهم ببطلان إجراءات الضبط والتفتيش لخلوّها من أي سند قانوني
+صحيح، إذ لم يصدر إذن من النيابة العامة، ولم تتوافر حالة التلبس. وترتيباً على
+ما تقدم: يكون الضبط والتفتيش باطلَيْن بطلاناً مطلقاً، ويترتب على ذلك — وفق
+مبدأ ثمرة الشجرة المسمومة — استبعاد كل دليل مستمد من هذا التفتيش الباطل."
+
+【 مثال دفع موضوعي 】
+"يصادف أن يجرأ الاتهام على ادعاء توافر القصد الجنائي رغم خلو الأوراق من أي
+دليل مادي قاطع، وهذا مما يقطع ببراءة الموكل عملاً بمبدأ أن الشك يفسر لمصلحة
+المتهم."
+
+⚠️ استخدمي هذا فقط لفهم درجة الحدة والجزم في الأسلوب — لا تنسخي أي عبارة
+حرفية منه ولا تنسبيها لأي رقم طعن في مذكرتك الحقيقية.
+─────────────────────────────────────────────────────────────────────────────
+"""
+
+MEMO_TEMPLATE = """بسم الله الرحمن الرحيم
+
+مذكرة بدفاع
+السيد/ [اسم المتهم]                                          المتهم
+ضـــــد
+النيابة العامة                                          المدعية بالحق العام
+في الجناية/الجنحة رقم [رقم القضية] لسنة [السنة] [المحكمة]
+
+─────────────────────────────────────
+أولاً: وقائع الدعوى
+─────────────────────────────────────
+[سرد الوقائع بأسلوب هجومي يفضح التناقضات. استخدم كلمات مثل: زعم، ادّعى، المستند إلى محضر باطل. اذكر التفاصيل الدقيقة من وقائع القضية: الأسماء، الأماكن، التواريخ]
+
+─────────────────────────────────────
+ثانياً: الدفوع الشكلية (البطلان)
+─────────────────────────────────────
+[ركز على بطلان الإجراءات إن وُجدت فعلاً وبما يتوافق مع طبيعة القضية. ⚠️ إذا لم توجد دفوع شكلية جوهرية مرتبطة بعيب إجرائي صريح في الوقائع، فاكتب جملة واحدة فقط: "لا توجد دفوع شكلية جوهرية تثيرها ظروف هذه القضية." ثم انتقل فوراً إلى الدفوع الموضوعية. ممنوع الخوض في تفاصيل أو تفسيرات أو الربط بأي عناصر غير إجرائية بحتة في هذا القسم.]
+
+─────────────────────────────────────
+ثالثاً: الدفوع الموضوعية (انتفاء أركان الجريمة)
+─────────────────────────────────────
+[⚠️ مهم جداً: لا تكرر كلام البطلان هنا. بناءً على نوع التهمة الفعلي من المصادر والتوجيه الخاص أدناه، ركز على هجوم الأركان الحقيقية لهذه الجريمة تحديداً:]
+[الدفع الأول: دفع التلفيق والكيدية (إن توافرت دلائله من غياب شهود أو تناقضات صارخة).]
+[الدفع الثاني: انتفاء الركن المادي للجريمة: نفي وقوع الفعل المادي أو استحالته منطقياً بناءً على وقائع القضية.]
+[الدفع الثالث: انتفاء القصد الجنائي (العام والخاص) المحدد لهذه الجريمة بذاتها.]
+[الدفع الرابع: ⚠️ لا تكتب "انتفاء الصلة أو الحيازة" إلا إذا كانت الجريمة من جرائم الحيازة (مخدرات/سلاح) فعلاً. لغير ذلك، استخدم الدفع الرابع المناسب بحسب "التوجيه الخاص بنوع الجريمة" أدناه.]
+[💡 تلميح: إذا كان لديك أكثر من حكم نقض في المصادر، اجمعهم تحت الدفع الأنسب لتقوية الأثر.]
+
+─────────────────────────────────────
+رابعاً: الطلبات الختامية
+─────────────────────────────────────
+[⚠️⚠️ إلزامي بالحرف: الطلب الأصلي والاحتياطي لازم يبدآ بالصياغة الحرفية التالية،
+لا يجوز اختصارها أو تعديلها أو استبدالها بصياغة قريبة:
+- "أولاً وبصفة أصلية:" (ثم نص الطلب)
+- "ثانياً واحتياطياً عن الأول:" (ثم نص الطلب)
+هذه الصياغة الحرفية جزء إلزامي من الشكل القانوني للمذكرة، وليست مجرد ترقيم.
+
+⚠️ محتوى الطلب لازم يتطابق مع قسم "الدفوع الشكلية" أعلاه:
+- لو كتبتِ في القسم التاني "لا توجد دفوع شكلية جوهرية"، فالطلب الأصلي هنا يكون
+  مباشرة "أولاً وبصفة أصلية: ببراءة المتهم لانتفاء أركان الجريمة ولعدم كفاية
+  أدلة الثبوت" بدون ذكر "قبول الدفوع الشكلية" أو "بطلان الإجراءات" إطلاقاً.
+- لو فعلاً فيه دفع شكلي حقيقي (بطلان قبض/تفتيش/إذن)، وقتها بس يجوز الطلب الأصلي
+  بقبول الدفوع الشكلية والبطلان، والاحتياطي بانتفاء الأركان.]
+
+لما تقدم، يلتمس الدفاع الحكم للسيد المستشار رئيس المحكمة:
+[اكتب صيغة الطلبات (أصلي/احتياطي) بما يطابق الشرط أعلاه فقط — لا تنسَ عبارتي
+"وبصفة أصلية" و"واحتياطياً عن الأول" بالحرف]
+
+ثالثاً وفي جميع الأحوال:
+إخلاء سبيل المتهم فوراً إن كان محبوساً احتياطياً.
+- لو فعلاً فيه دفع شكلي حقيقي (بطلان قبض/تفتيش/إذن)، **يجب إلزاماً** أن يتضمن
+  الطلب الاحتياطي على الأقل الإشارة لقبول هذا الدفع الشكلي وبطلان الإجراءات
+  المترتبة عليه، ولا يجوز إغفاله بالكامل من قسم الطلبات الختامية.
+─────────────────────────────────────
+خامساً: الطلبات الإجرائية المصاحبة
+─────────────────────────────────────
+[⚠️⚠️ هذا القسم إلزامي ولا يجوز حذفه أو إسقاطه تحت أي ظرف. بناءً على وقائع
+القضية فقط، اكتب 2 إلى 3 طلبات إجرائية دقيقة ومختصرة بصيغة "يُلتمس". ⚠️ ممنوع
+كتابة "استدعاء شهود النيابة" — فالنيابة العامة خصم في الدعوى ولا شهود لها؛
+الصحيح هو "استدعاء المجني عليه وضابط الواقعة (مُحرر المحضر) أمام المحكمة
+لمناقشتهم". ⚠️ ممنوع طلب "كاميرات مراقبة" إلا إذا كانت الجريمة تقع في مكان
+عام له كاميرات فعلاً. لا تكتب مقدمات، ولا تحذف هذا القسم مهما كانت الظروف.]
+
+وتفضلوا بقبول فائق الاحترام والتقدير،،،
+
+المحامي
+[اسم المحامي]
+المقيد بنقابة المحامين المصريين"""
+
+CRIME_SPECIFIC_DEFENSE_GUIDANCE = {
+    "سرقة وسطو": (
+        "بما أن التهمة سرقة بالإكراه، **لا تدفع بانتفاء الحيازة** (دي دفوع مخدرات/سلاح). "
+        "الدفع الجوهري الرابع هنا هو: انتفاء ركن الإكراه/التهديد بالقوة — اذكر خلو الأوراق من أي تقرير طبي "
+        "يثبت إصابة المجني عليه، وأن ما حدث أقصاه مشاجرة عادية لا سرقة بالإكراه بمعناها القانوني."
+    ),
+    "قتل خطأ وحوادث سيارات": (
+        "بما أن التهمة قتل/إصابة خطأ من حادث سيارة: **لا يوجد دفع بـ'بطلان محضر الضبط لعدم كفاية الأدلة'** "
+        "لأن القضية تقوم على تقرير المعاينة المرورية لا على تحريات شرطة تُبنى عليها هذه الصيغة من البطلان. "
+        "الدفع الرابع الصحيح هو: استغراق خطأ المجني عليه لخطأ المتهم بالكامل (أو انتفاء علاقة السببية)، وليس انتفاء الحيازة."
+    ),
+    "خيانة الأمانة": (
+        "بما أن التهمة خيانة أمانة/تبديد: **التوقيع على بياض ليس دفعاً بالبطلان** — قانوناً هو تفويض من الموقّع "
+        "للطرف الآخر بملء البيانات، فلا تكتب 'بطلان الإيصال لكونه على بياض'. الدفع الصحيح: انتفاء ركن التسليم "
+        "الحقيقي للمال / انتفاء القصد الجنائي، مع طلب إحالة أصل الإيصال لمصلحة الطب الشرعي (أبحاث التزييف والتزوير) "
+        "لإثبات الفارق الزمني بين توقيع المتهم وكتابة صلب الإيصال. **ممنوع** ذكر 'عدم وجود بصمات للمتهم على الورقة' "
+        "إن كان المتهم نفسه يُقر بأن التوقيع توقيعه. **ممنوع** طلب "
+        "'كاميرات مراقبة' أو 'استدعاء شهود النيابة' — قضايا الإيصالات تجارية ولا علاقة لها بالكاميرات."
+    ),
+    "مخدرات": "التزم بدفوع الحيازة والعلم والسيطرة الفعلية وسلسلة حفظ المضبوطات وصحة إذن التفتيش.",
+    "سلاح وذخيره": "التزم بدفوع الحيازة والترخيص وسلسلة حفظ المضبوطات وصحة إذن التفتيش.",
+    "تزوير وتقليد": "ركّز على سلسلة حفظ المستند المزور (من ضبطه؟ كيف حُفظ؟) والقصد الخاص بالتزوير.",
+    "قتل ومحاولة قتل عمد": "ركّز على تقرير الطب الشرعي، أدوات الجريمة، وانتفاء القصد الجنائي الخاص (نية القتل).",
+    "غش تجاري وتموين": (
+        "بما أن التهمة غش تجاري/تموين: **لا تدفع بانتفاء الحيازة** ولا 'بصمات مخدرات'. "
+        "ركّز على: عدم مطابقة العينة المضبوطة لتقرير المعمل الكيماوي المعتمد، سلسلة حفظ "
+        "الحرز والأختام (من فضّه؟ هل تطابقت الأوزان والأختام مع محضر الضبط؟)، وصحة إذن "
+        "التفتيش الإداري/القضائي الصادر من الجهة المختصة."
+    ),
+}
+
+DEFAULT_CRIME_GUIDANCE = (
+    "لا توجد ملاحظات خاصة محفوظة لهذا النوع من القضايا؛ التزم بالمنطق القانوني العام لوقائع هذه القضية "
+    "بالذات، **ولا تستعير مفاهيم أو أدلة من جرائم أخرى** (كالحيازة، أو المخدرات، أو الأسلحة، أو بصمات "
+    "مضبوطات، أو كاميرات مراقبة) إلا إذا وردت هذه العناصر فعلاً وحرفياً في وقائع هذه القضية تحديداً."
+)
+
+
+def _compute_length_instruction(case_facts: str) -> str:
+    """حساب مستوى التفصيل المطلوب بناءً على تعقيد القضية."""
+    word_count = len(case_facts) / 6
+    contradiction_markers = case_facts.count("تناقض") + case_facts.count("تبر") + case_facts.count("يثبت") + case_facts.count("خلو") + case_facts.count("كتاب رسمي") + case_facts.count("برقية")
+    evidence_markers = case_facts.count("تقرير") + case_facts.count("حرز") + case_facts.count("مضبوط") + case_facts.count("معمل") + case_facts.count("طب شرعي") + case_facts.count("شاهد")
+    complexity = word_count + (contradiction_markers * 40) + (evidence_markers * 30)
+
+    if complexity > 400:
+        return ("مستوى التفصيل المطلوب: هذه قضية معقدة وكبيرة. اكتب مذكرة طويلة ومفصّلة "
+                "(٨-١٠ صفحات). وسّع كل دفع بشرح عميق ووقائع مفصلة وأسانيد متعددة من أحكام النقض. "
+                "لا تختصر أي دفع — كل دفع لازم يكون فقرة كاملة بذاتها.")
+    elif complexity > 200:
+        return ("مستوى التفصيل المطلوب: هذه قضية متوسطة التعقيد. اكتب مذكرة متوسطة الطول "
+                "(٥-٧ صفحات). كل دفع يكون مفصّلاً بما يكفي مع استشهاد بأحكام النقض.")
+    else:
+        return ("مستوى التفصيل المطلوب: هذه قضية بسيطة أو قصيرة الوقائع. اكتب مذكرة مركزة "
+                "(٣-٤ صفحات). ركز على النقاط الجوهرية بدون حشو أو تكرار.")
+
+
+def build_system_prompt(context_block: str, crime_type: str | None = None,
+                        legal_nature: str | None = None) -> str:
+    """بناء الـ system prompt الكامل للموديل."""
+    specific_guidance = CRIME_SPECIFIC_DEFENSE_GUIDANCE.get(crime_type, DEFAULT_CRIME_GUIDANCE)
+    nature_guidance = NATURE_GUIDANCE.get(
+        legal_nature,
+        "⚠️ الطبيعة القانونية لهذه الجريمة (عمدية/غير عمدية) غير محددة بدقة في النظام حتى الآن. "
+        "استنتج من نص التهمة ووقائع القضية نفسها هل الجريمة تتطلب قصداً جنائياً أم أنها قائمة على "
+        "الخطأ/الإهمال، واستخدم المصطلح القانوني المطابق فقط ولا تفترض قصداً جنائياً في جريمة لم تُوصف كذلك."
+    )
+
+    return f"""أنت محامٍ مصري مخضرم ومتخصص في القضايا الجنائية بجميع أنواعها (مخدرات، قتل، تزوير، نصب، سلاح، إلكترونيات، أخلاقيات). أسلوبك فريد:
+1. هجومي وليس محايداً: أنت تدافع عن بريء، فهاجم أدلة الاتهام بشراسة.
+2. لغتك قانونية رصينة: تستخدم مصطلحات مثل (زعم الشاهد، المستند إلى محضر باطل، يتعين استبعاده، مبدأ ثمرة الشجرة المسمومة، يفسر لمصلحة المتهم).
+3. ممنوع الجمل العامة: كل جملة لابد أن ترتبط بوقائع القضية المحددة (اذكر الأسماء والأماكن بدقة).
+
+{"=" * 65}
+مثال على المستوى المطلوب — تعلّم منه أسلوب الهجوم القانوني فقط
+{"=" * 65}
+{FEW_SHOT_EXAMPLE}
+
+{"=" * 65}
+المصادر القانونية للقضية الجديدة — استخدمها كأساس لهدمك على الاتهام
+{"=" * 65}
+{context_block}
+
+{"=" * 65}
+هيكل المذكرة الإلزامي
+{"=" * 65}
+{MEMO_TEMPLATE}
+
+{"=" * 65}
+✅️ التصنيف الآلي لنوع الجريمة في هذه القضية: {crime_type or 'غير محدد'}
+✅️ الطبيعة القانونية للركن المعنوي: {legal_nature or 'غير محددة — استنتجها من الوقائع'}
+
+توجيه إلزامي بخصوص طبيعة الركن المعنوي (عمدي/غير عمدي):
+{nature_guidance}
+
+توجيه خاص إضافي بنوع الجريمة تحديداً:
+{specific_guidance}
+{"=" * 65}
+قواعد صارمة للاستشهاد والهجوم (تنطبق على أي جريمة)
+{"=" * 65}
+1. ⚠️⚠️ إلزامي وليس اختيارياً: كل حكم نقض ظاهر في قسم 'أحكام محكمة النقض' أعلاه
+يجب أن يُذكر رقمه وسنته حرفياً في المذكرة مرة واحدة على الأقل (بصيغة: طعن رقم
+XXX لسنة XX). إذا كان الحكم يخص نفس موضوع التهمة، استشهدي به مباشرة كسند لدفع
+الأركان. إذا كان الحكم عاماً، استشهدي به كمبدأ إجرائي عام. في كل الأحوال لا
+يجوز تجاهل أي حكم متاح في المصادر دون ذكره ولو مرة واحدة.
+2. المواد القانونية: اذكرها من المصادر فقط. لو ملفقتش مادة للبطلان، اكتب الدفع دون رقم مادة.
+3. الفرق بين الشكلية والموضوعية: الشكلية = بطلان الإجراءات (بما فيها بطلان القبض والتفتيش والإذن والإعلان). الموضوعية = انتفاء الركن (المادي أو المعنوي). لا تخلط بينهم!
+4. المرونة في الركن الموضوعي: بناءً على التهمة الواردة في الوقائع، حدد ما هو "القصد الخاص" للجريمة وهاجمه بالوقائع والمصادر.
+5. ⚠️ مانع الهلوسة في الطعون: لا تخترع أبداً أرقام طعون أو تواريخ جلسات غير موجودة في قسم "أحكام محكمة النقض" أعلاه. إذا لم تجد حكماً يناسب الدفع، اكتب الدفع بدون استشهاد بحكم نقض، أو قل "ومن المبادئ المستقرة في قضاء النقض أن..." بدون ذكر أرقام وهمية.
+6. الأسلوب الشخصي: اكتب بأسلوب المحامي الواثق. استخدم عبارات مثل: "يصادف أن يجرأ...", "من المستحيل عقلاً ونقضاً...", "هذا مما يقطع ببراءة الموكل...".
+7. ⚠️⚠️ ممنوع منعاً باتاً استيراد مفاهيم أو أدلة أو طلبات إجرائية من نوع جريمة مختلف عن التصنيف المذكور أعلاه (مثل: بصمات على مضبوطات، كاميرات مراقبة، دفع الحيازة، تفتيش سيارة) إلا إذا وردت هذه العناصر فعلاً وحرفياً في وقائع القضية المعروضة عليك. لو أي مصدر في "أحكام النقض" أو "مذكرات مشابهة" أعلاه يخص جريمة مختلفة عن هذه القضية، استخدمه فقط كأسلوب صياغة أو كمبدأ قانوني عام مجرد، ولا تستعير وقائعه أو تفاصيله الجزئية أبداً.
+8. ⚠️ ممنوع اختراع دفع "بطلان" شكلي وهمي لمجرد ملء القالب. الدفع بالبطلان لازم يرتبط بعيب إجرائي حقيقي مذكور صراحة في الوقائع (غياب إذن تفتيش، انتفاء حالة تلبس فعلية، بطلان قبض، عدم إعلان صحيح بالجلسة). عدم استدعاء شاهد أو طرف ثالث أثناء التحقيق **ليس سبباً للبطلان أبداً** — هذا محله "الطلبات الإجرائية"، لا دفع بطلان إجراءات. إذا لم تجد في الوقائع عيباً إجرائياً حقيقياً، فاكتب في قسم "الدفوع الشكلية" جملة واحدة صريحة تفيد بعدم وجود عيب إجرائي جوهري، وانقل ثقل الدفاع كله إلى الدفوع الموضوعية.
+9. ⚠️ الاقتباسات من أحكام النقض يجب أن تكون نصاً حرفياً منقولاً فعلاً من النص الموجود في قسم "أحكام محكمة النقض" أعلاه، ومرتبطاً برقم الطعن الصحيح لنفس هذا النص بالذات. **ممنوع** كتابة جملة من عندك ثم لصق رقم طعن عليها ليبدو مقتبساً.
+10. ⚠️⚠️ ممنوع منعاً باتاً استخدام أي جملة أو اقتباس من قسم "مثال على المستوى المطلوب" (FEW_SHOT_EXAMPLE) في مذكرتك الحقيقية — هذا المثال مكتوب يدويًا للتوضيح فقط وليس من مصادر هذه القضية، ولا يحمل رقم طعن حقيقي. استخدمه فقط لفهم الأسلوب والبنية، ولا تنقل منه أي عبارة حرفية أو تنسبها لأي رقم طعن مهما بدت مناسبة للدفع.
+11. ⚠️ عنوان كل دفع يجب أن يطابق مضمونه تماماً: لا تسمّي دفعاً "تلفيق وكيدية" إلا إذا كان محتواه فعلاً يزعم اختلاق الواقعة أو تلفيق المحضر ضد المتهم كيداً؛ خطأ الغير (كخطأ المجني عليه المروري) دفع سببية مستقل وليس تلفيقاً، فسمّه باسمه الصحيح.
+12. ⚠️ الفرق بين "الشكلي" و"الموضوعي": الدفع الشكلي يتعلق حصرياً بصحة الإجراءات (بطلان قبض/تفتيش/إذن/إعلان/اختصاص/إجراءات). أي دفع يمس أركان الجريمة نفسها (الخطأ، القصد، السببية، الركن المادي، كفاية الأدلة، التلفيق) هو دفع **موضوعي** ويُكتب حصراً تحت قسم "الدفوع الموضوعية". ⚠️ "بطلان الإجراءات" دفع شكلي إجرائي — يُكتب تحت "الدفوع الشكلية" فقط.
+13. ⚠️⚠️ إلزامية اكتمال الأقسام الخمسة: المذكرة يجب أن تحتوي على الأقسام الخمسة كاملة بعناوينها بالحرف (أولاً، ثانياً، ثالثاً، رابعاً، خامساً) — بما فيها "خامساً: الطلبات الإجرائية المصاحبة" في نهاية المذكرة. **ممنوع منعاً باتاً حذف أو إسقاط أي قسم من الخمسة** حتى لو كانت المذكرة طويلة.
+14. ⚠️⚠️ إجبار دمج طعون الـ RAG: يجب عليك إلزاماً كتابة أرقام الطعون والسنوات القضائية المسترجعة في قسم "أحكام محكمة النقض" أعلاه وتضمينها حرفياً في صلب دفوعك. يُمنع منعاً باتاً كتابة دفوع مرسلة بدون أرقام طعون طالما يتوفر في المصادر طعن يناسب الدفع — ولو كان الطعن غير مطابق تماماً، اكتبه مع تمييز السياق، ولا تتجاهله. إذا لم يتوفر أي طعن مناسب فعلاً، فقط حينها يجوز كتابة الدفع بدون رقم طعن.
+15. ⚠️ التمييز بين المصدرين: "نصوص القوانين الرسمية" هي الوحيدة التي يجوز الاستشهاد برقم مادتها. "شروح ومذكرات إيضاحية" تُستخدم فقط لفهم حكمة النص أو خلفيته — ممنوع نسبة رقم مادة لها أو معاملتها كنص ملزم.
+
+"""
+
+
+def expand_facts_and_extract_logic(case_facts: str, retrieved_context: dict) -> str:
+    """توسيع الوقائع بأسلوب قانوني هجومي مع إضافة النقاط الإجرائية الدقيقة."""
+    laws_summary = "\n".join(
+        f"- {h['title']}: {h['content'][:200]}"
+        for h in retrieved_context.get("laws", [])
+    )
+    cass_summary = "\n".join(
+        f"- {h['title']}: {h['content'][:200]}"
+        for h in retrieved_context.get("cassation", [])
+    )
+    crime_type = retrieved_context.get("crime_type")
+
+    procedural_map = {
+        "خيانة الأمانة": "أضف فقرة تركز على طبيعة العلاقة التعاقدية (هل التوقيع كان على بياض كضمان لمعاملة تجارية؟) وعلى انتفاء نية التبديد أو الاختلاس. **ممنوع** ذكر بصمات المتهم على الورقة (هو مُقرّ بالتوقيع أصلاً) و**ممنوع** ذكر كاميرات مراقبة.",
+        "سرقة وسطو": "أضف فقرة تهاجم ركن الإكراه/التهديد بالقوة تحديداً: هل يوجد تقرير طبي يثبت إصابة المجني عليه؟ وهل كان الضبط في حالة تلبس حقيقية؟",
+        "قتل خطأ وحوادث سيارات": "أضف فقرة تهاجم تقرير المعاينة المرورية وتناقضاته، وفقرة عن استغراق خطأ المجني عليه لخطأ المتهم (كعبور غير مخصص/إضاءة معطلة). لا تستخدم كلمة 'ضبط' أو 'تحريات' بالمعنى الجنائي التقليدي.",
+        "مخدرات": "أضف فقرة تهاجم 'سلسلة حفظ المضبوطات' (التغليف، الأختام، من نقلها للمعمل)، وفقرة عن غياب أدوات التجزئة أو الاتصالات.",
+        "سلاح وذخيره": "أضف فقرة تهاجم 'سلسلة حفظ المضبوطات' وصحة إجراءات التفتيش وإذن النيابة.",
+        "تزوير وتقليد": "أضف فقرة تهاجم 'سلسلة حفظ الدليل' للمستند المزور (من ضبطه؟ كيف حفظه؟ هل تعرض للتلاعب؟).",
+        "قتل ومحاولة قتل عمد": "أضف فقرة تهاجم تقرير الطب الشرعي وعدم وجود أسلحة أو آثار دم على المتهم، وتطالب بكاميرات الشوارع إن كانت الواقعة في مكان عام.",
+        "غش تجاري وتموين": "أضف فقرة تهاجم 'سلسلة حفظ الحرز' (الأختام، الأوزان، من نقله للمعمل الكيماوي) وفقرة عن غياب تقرير معملي معتمد يثبت طبيعة المواد المضبوطة فعلياً.",
+    }
+    procedural_instruction = procedural_map.get(
+        crime_type,
+        "لا تضف أي فقرة إجرائية خاصة (بصمات/كاميرات/سلسلة حفظ مضبوطات) لأن نوع الجريمة غير مطابق لأي من الأنواع المعروفة أعلاه — اكتب السرد الوقائعي فقط دون افتراض عناصر تحقيق غير مذكورة."
+    )
+
+    expander_prompt = f"""أنت مستشار قانوني مخضرم ومتخصص في صياغة مذكرات الدفاع. مهمتك تحويل وقائع موجزة إلى "وقائع دعوى مهيكلة" جاهزة للطباعة، مع إضافة النقاط الإجرائية الدقيقة التي يغفل عنها المحامون غالباً.
+
+وقائع المحامي المختصرة:
+{case_facts}
+
+🏷️ نوع الجريمة المصنف آلياً لهذه القضية بالتحديد: {crime_type or 'غير محدد'}
+⚠️ قاعدة صارمة جداً: طبّق فقط التوجيه الإجرائي المطابق حرفياً لهذا التصنيف:
+{procedural_instruction}
+لا تخترع أو تستعير أي فقرة إجرائية من تصنيف آخر مهما بدا مشابهاً.
+
+القوانين وأحكام النقض المتاحة:
+{laws_summary}
+{cass_summary}
+
+مطلوب منك:
+1. اكتب قسم "وقائع الدعوى" بأسلوب الجزم والقطع القانوني الهجومي.
+2. ⚠️ قاعدة صارمة: ممنوع كتابة الأسئلة. اكتب الحقيقة كاملة بأسلوب هجومي.
+3. ⚠️ قاعدة صارمة: ممنوع كتابة أرقام المواد القانونية.
+4. ⚠️ إلزامية ذكر التفاصيل: استخدم الأسماء الدقيقة كما وردت. ممنوع استخدام أقواس معقوفة.
+5. طبّق التوجيه الإجرائي المحدد أعلاه فقط (المطابق لنوع الجريمة المصنف)، ولا تُضف أي فقرة إجرائية غيره.
+6. أخرج النص بالشكل التالي فقط:
+
+وقائع الدعوى:
+[اكتب هنا وقائع الدعوى بأسلوب محامي مخضرم: هجومي، جازم، يفضح التناقضات دون أن يسأل أسئلة، ومطبّقاً فيه التوجيه الإجرائي أعلاه فقط]"""
+
+    return llm_text([{"role": "user", "content": expander_prompt}],
+                     temperature=0.2, max_tokens=1000)
+
+
+def generate_memo(case_facts: str, system_prompt: str) -> str:
+    """توليد مذكرة الدفاع عبر الـ LLM."""
+    if not case_facts or not case_facts.strip():
+        raise RuntimeError("وقائع القضية وصلت فاضية لمرحلة التوليد — على الأغلب خطوة سابقة "
+                            "(تلخيص/توسيع الوقائع) فشلت في الرجوع بنص. جرّبي تاني.")
+    return llm_text([
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": f"وقائع القضية:\n{case_facts.strip()}"},
+    ], temperature=0.15, max_tokens=7000)
+
+
+CROSS_CONTAMINATION_TERMS = {
+    "بصمات": ["مخدرات", "سلاح وذخيره", "سرقة وسطو", "قتل ومحاولة قتل عمد", "تزوير وتقليد"],
+    "كاميرات المراقبة": ["سرقة وسطو", "قتل ومحاولة قتل عمد", "قتل خطأ وحوادث سيارات", "الإضرار والبلاغات"],
+    "كاميرات الشوارع": ["سرقة وسطو", "قتل ومحاولة قتل عمد", "قتل خطأ وحوادث سيارات"],
+    "انتفاء الصلة أو الحيازة": ["مخدرات", "سلاح وذخيره"],
+    "انتفاء الحيازة": ["مخدرات", "سلاح وذخيره"],
+    "استدعاء شهود النيابة": [],
+    "بطلان محضر الضبط لعدم كفاية الأدلة": ["مخدرات", "سلاح وذخيره", "سرقة وسطو", "قتل ومحاولة قتل عمد", "تزوير وتقليد"],
+    "بطلان الإيصال لكونه على بياض": [],
+}
+
+
+def check_crime_type_contamination(memo: str, crime_type: str | None,
+                                    case_facts: str) -> list[str]:
+    """فحص هل المذكرة تحتوي عبارات تخص نوع جريمة آخر غير المذكور في الوقائع."""
+    warnings = []
+    crime_is_known = crime_type in CRIME_CATEGORIES
+
+    for term, allowed_types in CROSS_CONTAMINATION_TERMS.items():
+        if term in memo and term not in case_facts:
+            if not allowed_types:
+                warnings.append(f"عبارة غير صحيحة قانونياً بلا شرط نوع الجريمة: '{term}'")
+            elif crime_is_known and crime_type not in allowed_types:
+                warnings.append(
+                    f"خلط محتمل بين أنواع الجرائم: العبارة '{term}' لا تتوافق مع "
+                    f"نوع الجريمة الحالي ({crime_type})"
+                )
     return warnings
 
 
-# ── Job store ────────────────────────────────────────────────────────────────
-class JobStatus:
-    QUEUED = "queued"
-    PROCESSING = "processing"
-    COMPLETED = "completed"
-    FAILED = "failed"
+def _clean_memo_for_parsing(memo: str) -> str:
+    """تنظيف المذكرة قبل أي parsing بالـ regex."""
+    cleaned = re.sub(r'[-─═=]{3,}', '', memo)
+    cleaned = re.sub(r'[ \t]{2,}', ' ', cleaned)
+    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+    return cleaned
 
 
-_jobs: dict[str, dict] = {}
-_jobs_lock = threading.Lock()
-_work_queue: "queue.Queue[str]" = queue.Queue()
+PROCEDURAL_KEYWORDS = [
+    "بطلان القبض", "بطلان التفتيش", "بطلان الإعلان", "عدم الاختصاص",
+    "بطلان الإذن", "عدم صحة الإجراءات", "بطلان محضر الضبط", "بطلان الإحالة",
+    "بطلان الإجراءات",
+]
+SUBSTANTIVE_LEAKAGE_KEYWORDS = [
+    "انتفاء الخطأ", "انتفاء أركان الجريمة", "عدم كفاية الأدلة",
+    "انتفاء القصد", "انتفاء السببية", "انتفاء الركن المادي",
+]
 
 
-class _StageTracker:
-    """كائن file-like بنمرره لـ redirect_stdout عشان نلقط print() الصادرة من
-    pipeline.py ونحدّث بيها آخر مرحلة ظاهرة للفرونت — من غير ما نضيف أي
-    سطر جديد جوه pipeline.py نفسه."""
-    def __init__(self, job_id: str):
-        self.job_id = job_id
-
-    def write(self, text: str):
-        sys.__stdout__.write(text)
-        stripped = text.strip()
-        if not stripped:
-            return
-        with _jobs_lock:
-            job = _jobs.get(self.job_id)
-            if job is not None:
-                job["last_log"] = stripped
-                job["logs"].append(stripped)
-                m = re.search(r"\[(\d)/(\d)\]", stripped)
-                if m:
-                    job["stage"] = stripped
-                    job["progress"] = int(m.group(1)) / int(m.group(2))
-
-    def flush(self):
-        sys.__stdout__.flush()
+def check_procedural_substantive_mixup(memo: str) -> list[str]:
+    """فحص هل قسم الدفوع الشكلية يحتوي دفعاً موضوعياً بالخطأ."""
+    warnings = []
+    cleaned = _clean_memo_for_parsing(memo)
+    m = re.search(
+        r"(?:ثانياً|ثانيًا)[:\s]*الدفوع\s+الشكلية(.*?)(?:ثالثاً|ثالثًا|الدفوع\s+الموضوعية)",
+        cleaned, re.DOTALL
+    )
+    if not m:
+        return warnings
+    shakli_section = m.group(1)
+    has_real_procedural = any(k in shakli_section for k in PROCEDURAL_KEYWORDS)
+    has_substantive_leak = any(k in shakli_section for k in SUBSTANTIVE_LEAKAGE_KEYWORDS)
+    if has_substantive_leak and not has_real_procedural:
+        warnings.append(
+            "خلط شكلي/موضوعي: قسم الدفوع الشكلية يحتوي دفعاً يمس أركان الجريمة وليس إجرائياً بحتاً"
+        )
+    return warnings
 
 
-def _run_job(job_id: str):
-    with _jobs_lock:
-        job = _jobs[job_id]
-        job["status"] = JobStatus.PROCESSING
-        job["started_at"] = datetime.now(timezone.utc).isoformat()
-        job_input = job["input"]
+def check_intent_vs_negligence_logic(memo: str, legal_nature: str | None) -> list[str]:
+    """فحص توافق المصطلحات القانونية مع طبيعة الجريمة (عمدي/غير عمدي)."""
+    warnings = []
+    if legal_nature == "غير عمدي" and "انتفاء القصد الجنائي" in memo:
+        warnings.append(
+            "خطأ قانوني: جريمة غير عمدية لا يصح فيها الدفع بـ'انتفاء القصد الجنائي'؛ "
+            "الصحيح 'انتفاء ركن الخطأ' أو 'انقطاع السببية'"
+        )
+    if legal_nature == "عمدي" and (
+        "انتفاء ركن الخطأ" in memo or "استغراق خطأ المجني عليه" in memo
+    ):
+        warnings.append(
+            "خطأ قانوني: جريمة عمدية، الدفع بالركن المعنوي يجب أن يكون "
+            "'انتفاء القصد الجنائي' لا 'انتفاء الخطأ'"
+        )
+    return warnings
 
-    tracker = _StageTracker(job_id)
-    try:
-        with redirect_stdout(tracker):
-            case_facts = pipeline.build_case_from_freetext(job_input["raw_text"])
-            case_facts = override_case_facts_fields(
-                case_facts, job_input.get("case_number"), job_input.get("court")
+
+PROCEDURAL_IN_SUBSTANTIVE_TRIGGERS = [
+    "بطلان الإجراءات", "بطلان إجراءات", "بطلان المحضر",
+    "بطلان محضر الضبط", "بطلان القبض", "بطلان التفتيش",
+    "بطلان الإذن", "بطلان الإعلان", "بطلان الإحالة",
+]
+
+
+def check_procedural_in_substantive_section(memo: str) -> list[str]:
+    """فحص حتمي — يكشف لو دفع شكلي إجرائي وقع في قسم الدفوع الموضوعية."""
+    warnings = []
+    sections = extract_memo_sections(memo)
+    mawdo3i = sections.get("دفوع_موضوعية", "")
+
+    if mawdo3i == "(القسم غير موجود أو فارغ)":
+        return warnings
+
+    for trigger in PROCEDURAL_IN_SUBSTANTIVE_TRIGGERS:
+        if trigger in mawdo3i:
+            warnings.append(
+                f"دفع شكلي إجرائي ('{trigger}') وُضع خطأً تحت قسم الدفوع الموضوعية — "
+                f"الصحيح نقله إلى قسم الدفوع الشكلية"
             )
-            result = pipeline.draft_defense_memo(case_facts)
-
-        final_memo = apply_lawyer_info(
-            result["memo"], job_input.get("lawyer_name"), job_input.get("lawyer_license")
-        )
-        header, sections = split_memo_into_sections(final_memo)
-        case_metadata = extract_case_metadata(
-            case_facts, result["crime_type"], result["legal_nature"]
-        )
-        if job_input.get("lawyer_name"):
-            case_metadata["lawyer_name"] = job_input["lawyer_name"]
-        if job_input.get("lawyer_license"):
-            case_metadata["lawyer_license"] = job_input["lawyer_license"]
-
-        with _jobs_lock:
-            job["status"] = JobStatus.COMPLETED
-            job["progress"] = 1.0
-            job["finished_at"] = datetime.now(timezone.utc).isoformat()
-            job["chat_history"] = []
-            job["result"] = {
-                "memo": final_memo,
-                "header": header,
-                "sections": sections,
-                "case_metadata": case_metadata,
-                "crime_type": result["crime_type"],
-                "legal_nature": result["legal_nature"],
-                "correction_rounds": result["correction_rounds"],
-                "validation": {
-                    "passed": result["validation"]["passed"],
-                    "structural_score": result["validation"]["structural_score"],
-                    "unverified_articles": result["validation"]["unverified_articles"],
-                    "contamination_warnings": result["validation"]["contamination_warnings"],
-                    "critic_issues": result["validation"]["critic_issues"],
-                },
-                "case_facts": case_facts,
-                "sources": result.get("sources", {}),
-            }
-
-        # ── حفظ دائم في الداتابيز (best-effort — لو فشل، الجلسة الحالية
-        #    فضلت شغالة عادي زي الأول، بس مش هتلاقيها لو رجعتي تاني) ──
-        db_session_id = job.get("db_session_id")
-        if db_session_id:
-            try:
-                repo.save_memo_result(
-                    db_session_id, sections, case_metadata,
-                    result.get("sources", {}), final_memo,
-                )
-                # عنوان مختصر في السايد بار بدل أول 60 حرف من كلام المحامية
-                # الحر (اللي كان بيطلع فقرة كاملة) — لو قدرنا نستخرج نوع
-                # الجريمة/اسم المتهم من case_metadata نستخدمهم، وإلا نسيب
-                # العنوان زي ما هو (أول 60 حرف، اتحطوا وقت إنشاء الجلسة)
-                short_title = " — ".join(
-                    p for p in (case_metadata.get("crime_type"), case_metadata.get("defendant_name")) if p
-                )
-                repo.touch_session(db_session_id, title=short_title or None)
-            except Exception as e:
-                print(f"⚠️ فشل حفظ نتيجة المذكرة في الداتابيز: {e}")
-    except Exception as e:
-        with _jobs_lock:
-            job["status"] = JobStatus.FAILED
-            job["finished_at"] = datetime.now(timezone.utc).isoformat()
-            job["error"] = str(e)
-            job["traceback"] = traceback.format_exc()
+    return warnings
 
 
-def _worker_loop():
-    while True:
-        job_id = _work_queue.get()
-        try:
-            _run_job(job_id)
-        finally:
-            _work_queue.task_done()
+def extract_memo_sections(memo: str) -> dict:
+    """استخراج الأقسام الرئيسية من المذكرة كـ dict مهيكل."""
+    cleaned = _clean_memo_for_parsing(memo)
+    sections = {}
+
+    m_shakli = re.search(
+        r"(?:ثانياً|ثانيًا)[:\s]*الدفوع\s+الشكلية(.*?)(?:ثالثاً|ثالثًا|الدفوع\s+الموضوعية)",
+        cleaned, re.DOTALL
+    )
+    sections["دفوع_شكلية"] = m_shakli.group(1).strip() if m_shakli else "(القسم غير موجود أو فارغ)"
+
+    m_mawdo3i = re.search(
+        r"(?:ثالثاً|ثالثًا)[:\s]*الدفوع\s+الموضوعية(.*?)(?:رابعاً|رابعًا|الطلبات\s+الختامية)",
+        cleaned, re.DOTALL
+    )
+    sections["دفوع_موضوعية"] = m_mawdo3i.group(1).strip() if m_mawdo3i else "(القسم غير موجود أو فارغ)"
+
+    m_talabat = re.search(
+        r"(?:رابعاً|رابعًا)[:\s]*الطلبات\s+الختامية(.*?)(?:خامساً|خامسًا|$)",
+        cleaned, re.DOTALL
+    )
+    sections["طلبات_ختامية"] = m_talabat.group(1).strip() if m_talabat else "(القسم غير موجود)"
+
+    m_ijraeyah = re.search(
+        r"(?:خامساً|خامسًا)[:\s]*الطلبات\s+الإجرائية(.*)",
+        cleaned, re.DOTALL
+    )
+    sections["طلبات_إجرائية"] = m_ijraeyah.group(1).strip() if m_ijraeyah else "(القسم غير موجود)"
+
+    return sections
 
 
-_worker_thread = threading.Thread(target=_worker_loop, daemon=True)
-_worker_thread.start()
+CRITIC_LEGAL_DEFINITIONS = """\
+═══════════════════════════════════════════════════
+التعريفات القانونية الصارمة (القانون المصري)
+═══════════════════════════════════════════════════
+
+أولاً: الدفوع الشكلية / الإجرائية (Procedural Defenses)
+هي دفوع تتعلق بصحة الإجراءات الشكلية فقط، ولا تمس أركان الجريمة ذاتها:
+  • بطلان القبض
+  • بطلان التفتيش
+  • بطلان إذن النيابة العامة
+  • بطلان الإعلان (إعلان الجلسة / إعلان المتهم)
+  • عدم الاختصاص (محلي / نوعي)
+  • بطلان الإجراءات (كدفع إجرائي بحت يتعلق بعيب شكلي في إجراء من إجراءات التحقيق أو المحاكمة)
+  • انتفاء التلبس (كحالة واقعة تفتقر لشرط التلبس الحقيقي)
+  • بطلان محضر الضبط (بطلان شكلي محض — مثلاً: محرر بعد فوات التلبس)
+  • بطلان إحالة الدعوى
+
+ثانياً: الدفوع الموضوعية (Substantive Defenses)
+هي دفوع تمس أركان الجريمة أو عناصرها الموضوعية:
+  • انتفاء الركن المادي للجريمة
+  • انتفاء القصد الجنائي (نية ارتكاب الجريمة)
+  • انتفاء الركن المعنوي بشكل عام
+  • التلفيق والكيدية (اختلاق الواقعة أو تزوير المحضر)
+  • شيوع الاتهام وعدم تحديد المتهم
+  • عدم كفاية أدلة الثبوت
+  • انتفاء السببية (في الجرائم غير العمدية)
+  • انقطاع علاقة السببية
+  • تناقض الأدلة
+
+⚠️ قاعدة حاسمة: "بطلان الإجراءات" هو دفع شكلي إجرائي أصيل في القانون المصري.
+   لا يُصنّف أبداً كدفع موضوعي حتى لو تطلّب فحص الأساس القانوني.
+
+⚠️ قاعدة حاسمة: "التلفيق والكيدية" و"انتفاء الركن المادي" و"انتفاء القصد الجنائي"
+   هي دفوع موضوعية دائماً ولا يجوز وضعها تحت الدفوع الشكلية.
+
+ثالثاً: قواعد خاصة بطبيعة الجريمة (تُطبق تلقائياً حسب legal_nature، مش بالاسم)
+  • أي جريمة طبيعتها "عمدي" (كالرشوة، النصب، التزوير، الغش التجاري، السرقة، القتل
+    العمد...): الدفع بـ "انتفاء القصد الجنائي" هو دفع موضوعي سليم قانوناً تماماً،
+    ولا يجوز اعتباره خطأ أو تناقضاً — بل هو الدفع الصحيح والمتوقع في الركن المعنوي.
+  • أي جريمة طبيعتها "غير عمدي" (كالقتل الخطأ، الإصابة الخطأ): الدفع الصحيح هو
+    "انتفاء ركن الخطأ" أو "انقطاع السببية"، والدفع بـ"انتفاء القصد الجنائي" هنا
+    فقط هو الخطأ (لأن القانون أصلاً يفترض غياب القصد).
+"""
 
 
-# ── Chat-edit logic ──────────────────────────────────────────────────────────
-DELETE_KEYWORDS = ["امسح", "احذف", "شيل", "الغي", "الغِ", "أزيل", "ازال"]
+def legal_coherence_critic(memo: str, crime_type: str | None,
+                            legal_nature: str | None, case_facts: str) -> dict:
+    """مراجعة قانونية بالـ LLM لفحص التناسق الداخلي للمذكرة."""
+    sections = extract_memo_sections(memo)
 
+    critic_prompt = f"""أنت ناقد قانوني مصري خبير. مهمتك فحص التناسق الداخلي للمذكرة فقط — لا تعد كتابتها.
 
-def _classify_target_section(message: str, sections: list[dict]) -> str:
-    """استدعاء LLM خفيف يحدد أي قسم من الخمسة المقصود بطلب التعديل."""
-    listing = "\n".join(f"- {s['id']}: {s['title']}" for s in sections)
-    prompt = f"""أنت تصنّف طلبات تعديل على مذكرة دفاع قانونية. الأقسام المتاحة:
-{listing}
+{CRITIC_LEGAL_DEFINITIONS}
 
-طلب المحامية: "{message}"
+═══════════════════════════════════════════════════
+بيانات القضية
+═══════════════════════════════════════════════════
+نوع الجريمة: {crime_type or 'غير محدد'}
+الطبيعة القانونية (عمدي/غير عمدي): {legal_nature or 'غير محددة'}
 
-أخرجي فقط الـ id بتاع القسم الأنسب لهذا الطلب من القائمة أعلاه بالحرف
-(مثال: waqai) — بدون أي شرح. لو الطلب مش واضح لأي قسم بالتحديد، أخرجي: unclear"""
+═══════════════════════════════════════════════════
+أقسام المذكرة (مهيكلة — كل قسم لوحده)
+═══════════════════════════════════════════════════
+
+## قسم الدفوع الشكلية:
+{sections['دفوع_شكلية']}
+
+## قسم الدفوع الموضوعية:
+{sections['دفوع_موضوعية']}
+
+## قسم الطلبات الختامية:
+{sections['طلبات_ختامية']}
+
+═══════════════════════════════════════════════════
+قواعد الفحص الصارمة
+═══════════════════════════════════════════════════
+1. ⚠️ لا تهاجم تصنيف دفع إلا إذا كان فعلاً في القسم الخطأ.
+   — مثلاً: لو "التلفيق والكيدية" مكتوب تحت "الدفوع الموضوعية" فهذا صحيح (موضوعي) — لا تنتقده.
+   — لو "بطلان الإجراءات" مكتوب تحت "الدفوع الموضوعية" فهذا خطأ (الصحيح شكلي) — انتقده.
+   — لو "انتفاء الركن المادي" مكتوب تحت "الدفوع الموضوعية" فهذا صحيح — لا تنتقده.
+
+2. تحقق فقط من:
+   (أ) هل دفع موضوعي وُضع تحت قسم الشكلية؟ (خطأ)
+   (ب) هل دفع شكلي وُضع تحت قسم الموضوعية؟ (خطأ)
+   (ج) هل عنوان الدفع لا يتطابق مع مضمونه؟
+   (د) هل مصطلح قانوني يتناقض مع طبيعة الجريمة؟ (قصد في غير عمدي)
+   (هـ) هل استشهاد (رقم طعن/مادة) غير مرتبط بسياقه؟
+
+3. ⚠️ ممنوع إصدار ملاحظة على دفع لمجرد أنه "يتطلب فحص الأدلة".
+   كثير من الدفوع — شكلية كانت أم موضوعية — تتطلب فحص أدلة. هذا لا يُغيّر تصنيفها.
+
+4. ⚠️ لو لم تجد أي مشكلة حقيقية، أخرج: {{"issues": []}}
+   لا تُصنّف ملاحظات وهمية فقط لتبدو نشيطاً.
+
+أخرج فقط JSON: {{"issues": [{{"type": "...", "description": "...", "severity": "high|medium"}}]}}
+إن لم تجد مشكلة: {{"issues": []}}"""
+
     try:
-        result = pipeline.llm_text([{"role": "user", "content": prompt}],
-                                    temperature=0.0, max_tokens=15)
-    except RuntimeError:
-        return "unclear"
-    return result if result in SECTION_IDS else "unclear"
-
-
-TASK_LABELS = {
-    "memo": "مذكرة دفاع",
-    "contract": "صياغة عقد",
-    "review": "مراجعة عقد",
-    "research": "بحث قانوني",
-    "consultation": "استشارة قانونية",
-}
-
-
-def _classify_chat_action(message: str, current_task: str) -> dict:
-    """الراوتر الموحّد لأي شات تعديل (مذكرة أو عقد) — نداء LLM واحد بيحدد
-    واحدة من 3 حالات، مش اتنين بس زي _classify_chat_intent القديمة:
-      - edit: تعديل/حذف/إعادة صياغة جزء من {current_task} الحالية
-      - question: سؤال معلوماتي عن {current_task} الحالية من غير تعديل
-      - switch_task: طلب مهمة مختلفة تمامًا (مش استكمال لنفس المهمة الحالية)
-
-    ده اللي بيسد الفجوة اللي كانت موجودة: قبل كده لو المحامية جوه شات
-    المذكرة كتبت "عايزة كمان أعمل عقد إيجار"، الشات كان يحاول يفهمها كتعديل
-    أو سؤال عن المذكرة نفسه، من غير أي وعي إنها بتطلب مهمة تانية خالص.
-
-    Fail-safe: أي غموض أو فشل في الرد → ترجع "edit" (السلوك الأصلي قبل
-    الإضافة دي) عشان منكسرش حاجة شغالة."""
-    other_tasks = ", ".join(f"{k} ({v})" for k, v in TASK_LABELS.items() if k != current_task)
-    prompt = f"""أنتِ الراوتر الموحّد في نظام "مُحَكِّم" القانوني. المستخدم حالياً
-جوه شاشة "{TASK_LABELS.get(current_task, current_task)}" بيتكلم في شات التعديل بتاعها.
-
-صنّفي رسالته كواحدة من 3 حالات بس:
-- "edit": طلب تعديل/حذف/إعادة صياغة جزء من {TASK_LABELS.get(current_task, current_task)} الحالية
-- "question": سؤال معلوماتي عن {TASK_LABELS.get(current_task, current_task)} الحالية
-  (مرجع قانوني، توضيح، سبب) من غير طلب تعديل
-- "switch_task": طلب مهمة مختلفة تمامًا مش استكمال لـ {TASK_LABELS.get(current_task, current_task)}
-  الحالية — يعني عايزة تبدأ واحدة من: {other_tasks}
-
-⚠️ لو الرسالة ممكن تتفهم كتعديل على نفس القضية الحالية (حتى لو مش واضح
-100%)، صنّفيها "edit" أو "question" — متفترضيش switch_task إلا لو صريح
-إن المستخدم بيتكلم عن قضية أو مهمة مختلفة تمامًا.
-
-رسالة المستخدم: "{message}"
-
-لو switch_task، حددي كمان new_intent من: memo, contract, review, research, consultation
-
-أجب بـ JSON فقط بدون أي نص إضافي:
-{{"action": "edit|question|switch_task", "new_intent": "..." أو null}}"""
-
-    fallback = {"action": "edit", "new_intent": None}
-    try:
-        raw = pipeline.llm_text([{"role": "user", "content": prompt}],
-                                 temperature=0.0, max_tokens=60)
-    except RuntimeError:
-        return fallback
-
+        raw = llm_text([{"role": "user", "content": critic_prompt}],
+                        temperature=0.0, max_tokens=800)
+    except RuntimeError as e:
+        return {"issues": [], "parse_error": str(e)}
     raw = re.sub(r"^```json|```$", "", raw, flags=re.MULTILINE).strip()
     try:
-        data = json.loads(raw)
+        return json.loads(raw)
     except Exception:
-        return fallback
-
-    action = data.get("action") if data.get("action") in ("edit", "question", "switch_task") else "edit"
-    new_intent = data.get("new_intent") if data.get("new_intent") in TASK_LABELS else None
-    if action == "switch_task" and new_intent is None:
-        action = "edit"  # لو مش متأكدة من نوع المهمة الجديدة، متسيبهاش تعلّق فاضي
-    return {"action": action, "new_intent": new_intent}
+        return {"issues": [], "parse_error": raw}
 
 
-def _format_sources_for_chat(sources: dict) -> str:
-    """يبني نص مختصر بالمصادر (أحكام نقض + مواد قانونية) اللي اتجابت
-    وقت توليد المذكرة، عشان الشات يقدر يستشهد بيها لو المحامية سألت."""
-    if not sources:
-        return "لا توجد مصادر محفوظة لهذه المذكرة."
-
-    blocks = []
-    cassation = sources.get("cassation") or []
-    if cassation:
-        lines = []
-        for c in cassation:
-            meta = c.get("metadata", {})
-            ref = meta.get("ruling_num") or meta.get("ruling_number") or ""
-            year = meta.get("ruling_year") or meta.get("year") or ""
-            label = f"طعن رقم {ref} لسنة {year}" if ref else c.get("title", "حكم نقض")
-            blocks.append(f"[{label}]\n{c.get('content', '')[:500]}")
-        blocks.insert(0, "## أحكام نقض:")
-
-    laws = (sources.get("laws") or []) + (sources.get("laws2") or [])
-    if laws:
-        law_lines = ["## مواد قانونية:"]
-        for l in laws:
-            title = l.get("title", "")
-            art = l.get("article_num", "")
-            label = f"{title} - مادة {art}" if art else title
-            law_lines.append(f"[{label}]\n{l.get('content', '')[:500]}")
-        blocks.extend(law_lines)
-
-    return "\n\n".join(blocks) if blocks else "لا توجد مصادر محفوظة لهذه المذكرة."
+def extract_cassation_citations(text: str) -> set:
+    """استخراج مجموعة (رقم الطعن, السنة) من نص المذكرة."""
+    return set(re.findall(r'طعن رقم\s*(\d+)\s*لسنة\s*(\d+)', text))
 
 
-def _answer_legal_question(message: str, sources: dict, sections: list[dict]) -> str:
-    """يرد على سؤال معلوماتي بالاستناد فقط للمصادر المحفوظة وقت التوليد —
-    من غير ما يعدّل المذكرة، ومن غير اختراع مراجع مش موجودة فعلاً."""
-    sources_text = _format_sources_for_chat(sources)
-    sections_text = "\n\n".join(f"### {s['title']}\n{s['body']}" for s in sections)
+def check_citation_fidelity(memo: str, cassation_used: list) -> dict:
+    """فحص دقة الاستشهاد بأحكام النقض."""
+    memo_citations = extract_cassation_citations(memo)
+    source_citations = set()
+    for h in cassation_used:
+        meta = h.get("metadata", {})
+        if meta.get("ruling_num") and meta.get("ruling_year"):
+            source_citations.add((str(meta["ruling_num"]), str(meta["ruling_year"])))
 
-    prompt = f"""أنتِ مساعدة قانونية بترد على سؤال محامية بخصوص مذكرة دفاع كتبتها.
-جاوبي بالاستناد فقط للمصادر الموجودة تحت — ممنوع تخترعي رقم طعن أو مادة قانونية
-مش موجودة في المصادر دي. لو السؤال عن مرجع مش موجود في المصادر، قولي بوضوح
-إن المرجع ده مش من ضمن اللي استُخدم وقت التوليد.
+    unverified_citations = memo_citations - source_citations
 
-## نص المذكرة الحالي:
-{sections_text}
-
-## المصادر المستخدمة وقت التوليد:
-{sources_text}
-
-## سؤال المحامية:
-{message}
-
-جاوبي بإيجاز ودقة، واذكري المرجع المحدد (رقم الطعن أو المادة) لو موجود:"""
-
-    return pipeline.llm_text([{"role": "user", "content": prompt}],
-                              temperature=0.1, max_tokens=600)
-
-
-def _rewrite_section(section: dict, message: str, crime_type: str | None,
-                      legal_nature: str | None) -> str:
-    """يعيد صياغة قسم واحد بس بناءً على طلب الشات، مع الالتزام بنفس
-    التوجيهات القانونية المستخدمة وقت التوليد الأصلي (من قواميس pipeline.py
-    الجاهزة — من غير إعادة استرجاع RAG من جديد)."""
-    specific_guidance = pipeline.CRIME_SPECIFIC_DEFENSE_GUIDANCE.get(
-        crime_type, pipeline.DEFAULT_CRIME_GUIDANCE
-    )
-    nature_guidance = pipeline.NATURE_GUIDANCE.get(legal_nature, "")
-
-    prompt = f"""أنت محامٍ مصري مخضرم بتعدّل قسم واحد بس من مذكرة دفاع بناءً على
-طلب زميلتك المحامية. لا تكتبي مقدمات ولا تعليقات — أخرجي نص القسم المعدّل فقط.
-
-عنوان القسم: {section['title']}
-
-النص الحالي للقسم:
-{section['body']}
-
-طلب التعديل: {message}
-
-قيود إلزامية يجب الالتزام بها:
-- التزمي بنفس أسلوب الهجوم القانوني الرصين المستخدم في باقي المذكرة.
-- ممنوع اختراع أرقام مواد قانونية أو أرقام طعون غير موجودة أصلاً في النص الحالي.
-- توجيه خاص بنوع الجريمة ({crime_type or 'غير محدد'}): {specific_guidance}
-- توجيه الركن المعنوي: {nature_guidance}
-- لو القسم من الدفوع الشكلية أو الموضوعية، حافظي على التصنيف الصحيح (لا تخلطي
-  دفعاً إجرائياً مع دفع موضوعي أو العكس).
-
-أخرجي نص القسم الجديد فقط:"""
-
-    return pipeline.llm_text([{"role": "user", "content": prompt}],
-                              temperature=0.2, max_tokens=1500)
-
-
-def _handle_chat_edit(job: dict, message: str) -> dict:
-    result = job["result"]
-    sections = result["sections"]
-    crime_type = result["crime_type"]
-    legal_nature = result["legal_nature"]
-
-    action = _classify_chat_action(message, "memo")
-    if action["action"] == "switch_task":
-        new_intent = action["new_intent"]
-        return {
-            "reply": f"تمام، فهمت إنك عايزة {TASK_LABELS[new_intent]} — هحوّلك دلوقتي.",
-            "updated_sections": None,
-            "change_card": None,
-            "warnings": [],
-            "switch_task": {"intent": new_intent, "enriched_prompt": message},
-        }
-    if action["action"] == "question":
-        answer = _answer_legal_question(message, result.get("sources", {}), sections)
-        return {
-            "reply": answer,
-            "updated_sections": None,
-            "change_card": None,
-            "warnings": [],
-            "switch_task": None,
-        }
-
-    target_id = _classify_target_section(message, sections)
-    is_delete_request = any(k in message for k in DELETE_KEYWORDS)
-
-    if target_id == "unclear":
-        return {
-            "reply": "مش واضحلي تعديلك ده يخص أي قسم من المذكرة (الوقائع/الدفوع الشكلية/"
-                     "الدفوع الموضوعية/الطلبات الختامية/الطلبات الإجرائية) — ممكن توضحي أكتر؟",
-            "updated_sections": None,
-            "change_card": None,
-            "warnings": [],
-        }
-
-    if is_delete_request and target_id in MANDATORY_SECTION_IDS:
-        title = SECTION_TITLES[target_id]
-        return {
-            "reply": f"معلش، قسم \"{title}\" إلزامي في أي مذكرة دفاع قانونياً ومينفعش يتمسح "
-                     f"بالكامل — لو فيه جزء بس عاوزة تختصريه أو تعدّليه، قوليلي بالظبط إيه.",
-            "updated_sections": None,
-            "change_card": None,
-            "warnings": [],
-        }
-
-    section = next(s for s in sections if s["id"] == target_id)
-    old_body = section["body"]
-    new_body = _rewrite_section(section, message, crime_type, legal_nature)
-
-    updated_sections = [
-        {**s, "body": new_body} if s["id"] == target_id else s for s in sections
-    ]
-    new_memo = reconstruct_memo(result["header"], updated_sections)
-    warnings = run_legal_checks(new_memo, crime_type, legal_nature, result["case_facts"])
-
-    result["sections"] = updated_sections
-    result["memo"] = new_memo
-
-    reply = f"عدّلت \"{SECTION_TITLES[target_id]}\" حسب طلبك."
-    if warnings:
-        reply += " ⚠️ لاحظي: " + " | ".join(warnings)
+    quotes = re.findall(r'"([^"]{15,})"', memo)
+    source_text = " ".join(h.get("content", "") for h in cassation_used)
+    unverified_quotes = [q for q in quotes if q[:25] not in source_text]
 
     return {
-        "reply": reply,
-        "updated_sections": updated_sections,
-        "change_card": {
-            "section_id": target_id,
-            "section_title": SECTION_TITLES[target_id],
-            "old_text": old_body,
-            "new_text": new_body,
-        },
-        "warnings": warnings,
+        "memo_citations": sorted(memo_citations),
+        "source_citations": sorted(source_citations),
+        "unverified_citations": sorted(unverified_citations),
+        "unverified_quotes": unverified_quotes,
     }
 
 
-# ── Request/Response models ─────────────────────────────────────────────────
-
-# ── Router Agent ────────────────────────────────────────────────────────────
-ROUTER_SYSTEM_PROMPT = """أنت المساعد الذكي في نظام "مُحَكِّم" القانوني. المستخدم يتحدث معك في الشاشة الرئيسية قبل تنفيذ أي مهمة.
-
-مهمتك:
-1. فهم ما يريد المستخدم من رسالته الحالية + سياق المحادثة السابقة
-2. تصنيف النية (intent) إلى أحد الأنواع:
-   - memo: إعداد مذكرة دفاع / لائحة دفاع / مرافعة
-   - contract: صياغة عقد / إنشاء اتفاقية
-   - review: مراجعة عقد / فحص عقد / تحليل مخاطر
-   - research: بحث قانوني / مواد / أحكام
-   - consultation: استشارة قانونية / سؤال عام (الافتراضي)
-3. الرد بالمحتوى المناسب
-
-قواعد مهمة:
-- لو المستخدم وصف وقائع قضية (متهم، تهمة، قبض، إلخ) من غير ما يطلب إجراء محدد:
-  intent = "consultation"  should_route = false
-  أجب باعتِراف إنك فهمت القضية واطلب توضيح المطلوب (مثلاً: مذكرة دفاع؟ مراجعة عقد؟ بحث قانوني؟)
-- لو المستخدم طلب إجراء معين (مذكرة/عقد/مراجعة/بحث):
-  should_route = true
-  enriched_prompt = دمج كل السياق الموجود (وقائع + تفاصيل) مع الطلب الحالي
-  is_reference = true لو كان يشير لمعلومات قالها قبل كده
-- لو المستخدم طلب إجراء من غير سياق كافي:
-  should_route = true  enriched_prompt = النص المتاح
-  أضف في الـ response تنبيه إن المعلومات محدودة
-- لو رسالة المستخدم قصيرة جداً أو غامضة:
-  should_route = false  اطلب توضيح
-
-أجب بـ JSON فقط بدون أي نص إضافي:
-{"intent":"...","should_route":true/false,"is_reference":true/false,"response":"...","enriched_prompt":"..."}"""
-
-
-class RouterMessage(BaseModel):
-    role: str
-    text: str
-
-
-class RouterRequest(BaseModel):
-    messages: list[RouterMessage]
-    current_text: str
-
-
-class RouterResponse(BaseModel):
-    intent: str
-    should_route: bool
-    is_reference: bool
-    response: str
-    enriched_prompt: str
-
-
-_ROUTER_KEYWORDS: dict[str, list[str]] = {
-    "memo": ["مذكرة", "دفاع", "مرافعة", "لائحة"],
-    "contract": ["عقد", "صياغة", "اتفاقية", "بنود", "عقود"],
-    "review": ["مراجعة", "راجع", "فحص", "تدقيق", "تحليل"],
-    "research": ["بحث", "مقال", "مادة", "قانون", "حكم", "سابقة"],
-}
-
-
-def _keyword_fallback_router(text: str, history_text: str) -> dict:
-    """Fallback keyword-based routing when LLM is unavailable."""
-    lower = text.lower()
-    best_intent = "consultation"
-    best_score = 0
-    for intent_type, kws in _ROUTER_KEYWORDS.items():
-        score = sum(1 for kw in kws if kw in lower)
-        if score > best_score:
-            best_score = score
-            best_intent = intent_type
-
-    has_action = best_intent != "consultation"
-    is_ref = any(w in lower for w in [
-        "القضية", "ده", "دي", "اللي", "المذكور", "السابق",
-        "كما ذكرت", "للقضية", "نفس", "بخصوص",
-    ])
-    enriched = f"{history_text}\n\n{text}" if (is_ref and history_text) else text
-
-    if has_action:
-        labels = {"memo": "إعداد مذكرة دفاع", "contract": "صياغة عقد",
-                  "review": "مراجعة العقد", "research": "بحث قانوني"}
-        response = f"حاضر، هبدأ {labels.get(best_intent, 'المطلوب')} فوراً."
-    elif len(text) > 30:
-        response = ("فهمت. هل تريد إعداد مذكرة دفاع لهذه القضية، "
-                    "أو تحتاج مساعدة في شيء آخر؟")
-    else:
-        response = ("كيف أقدر أساعدك؟ ممكن تكتب وقائع قضية "
-                    "أو تطلب إجراء معين (مذكرة دفاع، صياغة عقد، "
-                    "مراجعة عقد، أو بحث قانوني).")
-
-    return {"intent": best_intent, "should_route": has_action,
-            "is_reference": is_ref, "response": response,
-            "enriched_prompt": enriched}
-
-
-@app.post("/api/router", response_model=RouterResponse)
-async def router_endpoint(payload: RouterRequest):
-    """Router Agent: يصنّف نية المستخدم ويرد محادثياً أو يبدأ التنفيذ."""
-    try:
-        conversation = [{"role": "system", "content": ROUTER_SYSTEM_PROMPT}]
-        for msg in payload.messages[-6:]:
-            conversation.append({"role": msg.role, "content": msg.text})
-        conversation.append({"role": "user", "content": payload.current_text})
-
-        raw = pipeline.llm_text(conversation, temperature=0.1, max_tokens=600)
-        # handle possible markdown fences
-        if raw.startswith("```"):
-            raw = re.sub(r"^```(?:json)?\s*", "", raw)
-            raw = re.sub(r"\s*```$", "", raw)
-        result = json.loads(raw)
-
-        return RouterResponse(
-            intent=result.get("intent", "consultation"),
-            should_route=result.get("should_route", False),
-            is_reference=result.get("is_reference", False),
-            response=result.get("response", ""),
-            enriched_prompt=result.get("enriched_prompt", payload.current_text),
-        )
-    except Exception:
-        history = "\n".join(m.text for m in payload.messages if m.role == "user")
-        return RouterResponse(**_keyword_fallback_router(payload.current_text, history))
-
-
-# ── Request/Response models ─────────────────────────────────────────────────
-class GenerateMemoRequest(BaseModel):
-    raw_text: str          # كلام المحامية الحر بالكامل — نفس USER_RAW_INPUT
-    court: Optional[str] = None
-    case_number: Optional[str] = None
-    lawyer_name: Optional[str] = None
-    lawyer_license: Optional[str] = None
-
-
-class JobResponse(BaseModel):
-    job_id: str
-    status: str
-    db_session_id: Optional[str] = None
-
-
-class JobStatusResponse(BaseModel):
-    job_id: str
-    status: str
-    progress: float
-    stage: Optional[str] = None
-    result: Optional[dict] = None
-    error: Optional[str] = None
-
-
-class SaveSectionsRequest(BaseModel):
-    sections: list[dict]   # [{id, title, body}, ...] — نفس شكل اللي رجع من generate
-
-
-class ChatEditRequest(BaseModel):
-    job_id: str
-    message: str
-
-
-# ── Endpoints ────────────────────────────────────────────────────────────────
-@app.get("/api/health")
-def health():
-    try:
-        collections = pipeline.qdrant.get_collections().collections
-        return {"status": "ok", "qdrant_collections": [c.name for c in collections]}
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Qdrant unreachable: {e}")
-
-
-@app.post("/api/memo/generate", response_model=JobResponse)
-def generate_memo(payload: GenerateMemoRequest, user: "CurrentUser | None" = Depends(try_get_current_user)):
-    """بيبدأ job (استرجاع → توليد → تحقق → تصحيح، من دقيقة لـ3 دقايق) ويرجع
-    job_id على طول. اعملي polling على GET /api/memo/{job_id} لحد ما status
-    يبقى completed — ده اللي بيغذي شاشة اللودينج.
-
-    لو المستخدم مسجّل دخول (user مش None) وفيه داتابيز متوصّلة، بتتعمل
-    session دائمة في الـ DB من الأول، والنتيجة بتتحفظ فيها لما التوليد يخلص
-    (شوفي _run_job) — يعني تقدري ترجعي للمذكرة دي بعدين من أي جهاز."""
-    if not payload.raw_text or not payload.raw_text.strip():
-        raise HTTPException(status_code=400, detail="raw_text فاضي")
-
-    db_session_id = None
-    if user:
-        try:
-            session_row = repo.create_session(
-                user.firm_id, user.user_id, "memo",
-                title=payload.raw_text.strip()[:60], prompt=payload.raw_text,
+def check_fewshot_leak(memo: str) -> list[str]:
+    """فحص هل المذكرة تسربت منها جمل من FEW_SHOT_EXAMPLE."""
+    warnings = []
+    quotes = re.findall(r'"([^"]{15,})"', memo)
+    for q in quotes:
+        if q[:30] in FEW_SHOT_EXAMPLE:
+            warnings.append(
+                f"تسريب مؤكد من FEW_SHOT_EXAMPLE: \"{q[:60]}...\" — ده مثال توضيحي ثابت مش مصدر حقيقي"
             )
-            db_session_id = str(session_row["id"])
-        except Exception as e:
-            print(f"⚠️ فشل حفظ الجلسة في الداتابيز (هتكمل من غير حفظ دائم): {e}")
-
-    job_id = str(uuid.uuid4())
-    with _jobs_lock:
-        _jobs[job_id] = {
-            "status": JobStatus.QUEUED,
-            "progress": 0.0,
-            "stage": None,
-            "logs": [],
-            "last_log": None,
-            "input": payload.model_dump(),
-            "result": None,
-            "error": None,
-            "chat_history": [],
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "db_session_id": db_session_id,
-        }
-    _work_queue.put(job_id)
-    return JobResponse(job_id=job_id, status=JobStatus.QUEUED, db_session_id=db_session_id)
+    return warnings
 
 
-@app.get("/api/memo/{job_id}", response_model=JobStatusResponse)
-def get_memo(job_id: str):
-    with _jobs_lock:
-        job = _jobs.get(job_id)
-        if job is None:
-            raise HTTPException(status_code=404, detail="job_id مش موجود")
-        return JobStatusResponse(
-            job_id=job_id,
-            status=job["status"],
-            progress=job["progress"],
-            stage=job.get("stage"),
-            result=job.get("result"),
-            error=job.get("error"),
+NO_PROCEDURAL_DEFENSE_MARKERS = ["لا توجد دفوع شكلية جوهرية"]
+PROCEDURAL_WIN_REQUEST_MARKERS = [
+    "قبول الدفوع الشكلية", "بطلان الإجراءات المعيبة", "بطلان الإجراءات",
+]
+
+
+def check_request_consistency(memo: str) -> list[str]:
+    """فحص توافق قسم الطلبات الختامية مع قسم الدفوع الشكلية."""
+    warnings = []
+    cleaned = _clean_memo_for_parsing(memo)
+    m_shakli = re.search(
+        r"(?:ثانياً|ثانيًا)[:\s]*الدفوع\s+الشكلية(.*?)(?:ثالثاً|ثالثًا|الدفوع\s+الموضوعية)",
+        cleaned, re.DOTALL
+    )
+    m_talabat = re.search(
+        r"(?:رابعاً|رابعًا)[:\s]*الطلبات\s+الختامية(.*?)(?:خامساً|خامسًا|$)",
+        cleaned, re.DOTALL
+    )
+    if not m_shakli or not m_talabat:
+        return warnings
+
+    no_procedural = any(
+        marker in m_shakli.group(1) for marker in NO_PROCEDURAL_DEFENSE_MARKERS
+    )
+    requests_procedural_win = any(
+        marker in m_talabat.group(1) for marker in PROCEDURAL_WIN_REQUEST_MARKERS
+    )
+
+    if no_procedural and requests_procedural_win:
+        warnings.append(
+            "تناقض: قسم الدفوع الشكلية يقر بعدم وجود دفع شكلي جوهري، لكن الطلبات "
+            "الختامية بصفة أصلية تطلب الحكم بقبول الدفوع الشكلية/بطلان الإجراءات"
+        )
+    return warnings
+
+
+def check_procedural_defense_not_requested(memo: str) -> list[str]:
+    """فحص عكسي: دفع شكلي حقيقي بلا طلب مقابل."""
+    warnings = []
+    sections = extract_memo_sections(memo)
+    shakli = sections.get("دفوع_شكلية", "")
+    talabat = sections.get("طلبات_ختامية", "")
+
+    if shakli == "(القسم غير موجود أو فارغ)" or talabat == "(القسم غير موجود)":
+        return warnings
+
+    has_real_procedural = any(k in shakli for k in PROCEDURAL_KEYWORDS)
+    requested_in_talabat = any(
+        k in talabat for k in PROCEDURAL_WIN_REQUEST_MARKERS + ["بطلان"]
+    )
+
+    if has_real_procedural and not requested_in_talabat:
+        warnings.append(
+            "دفع شكلي حقيقي مذكور في قسم ثانياً (الدفوع الشكلية) لكنه لم يُترجم "
+            "لأي طلب في قسم رابعاً (الطلبات الختامية) — الدفع يبقى بلا أثر قانوني"
+        )
+    return warnings
+
+
+def validate_memo(memo: str, laws_used: list, cassation_used: list,
+                   crime_type: str | None = None, legal_nature: str | None = None,
+                   case_facts: str = "") -> dict:
+    """فحص شامل للمذكرة يجمع كل الفحوصات الحتمية + الناقد القانوني."""
+    results: dict = {}
+    critic_high: list[dict] = []
+    critic_issues: list[dict] = []
+
+    structural = {
+        "بسم الله": "بسم الله" in memo,
+        "ديباجة المذكرة": "مذكرة بدفاع" in memo,
+        "وقائع الدعوى": "وقائع" in memo,
+        "دفوع شكلية": "شكلي" in memo or "الشكلية" in memo,
+        "دفوع موضوعية": "موضوعي" in memo or "الموضوعية" in memo,
+        "طلب أصلي": "بصفة أصلية" in memo or "أصلياً" in memo,
+        "طلب احتياطي": "احتياطياً عن الأول" in memo or "واحتياطياً" in memo,
+        "بند إخلاء السبيل المستقل": bool(re.search(r"ثالثاً\s*وفي جميع الأحوال", _clean_memo_for_parsing(memo))),
+        "النيابة العامة": "النيابة العامة" in memo,
+        "الطلبات الإجرائية": "خامساً" in memo and "الطلبات الإجرائية" in memo,
+    }
+    struct_score = sum(structural.values()) / len(structural)
+    results["structural"] = structural
+    results["structural_score"] = round(struct_score, 2)
+
+    request_consistency_warnings = check_request_consistency(memo)
+    results["request_consistency_warnings"] = request_consistency_warnings
+
+    procedural_not_requested_warnings = check_procedural_defense_not_requested(memo)
+    results["procedural_not_requested_warnings"] = procedural_not_requested_warnings
+
+    memo_articles = set(re.findall(r'مادة\s*(\d+)', memo))
+    source_articles = set()
+    for h in laws_used:
+        if h.get("article_num"):
+            source_articles.add(h["article_num"])
+        source_articles.update(re.findall(r'مادة\s*(\d+)', h.get("content", "")))
+    unverified = memo_articles - source_articles
+    results["memo_articles"] = sorted(memo_articles)
+    results["source_articles"] = sorted(source_articles)
+    results["unverified_articles"] = sorted(unverified)
+
+    results["has_cassation_reference"] = bool(re.search(r'نقض|طعن|محكمة النقض', memo))
+
+    contamination_warnings = check_crime_type_contamination(memo, crime_type, case_facts)
+    results["contamination_warnings"] = contamination_warnings
+
+    citation_fidelity = check_citation_fidelity(memo, cassation_used)
+    results["citation_fidelity"] = citation_fidelity
+
+    fewshot_leak_warnings = check_fewshot_leak(memo)
+    results["fewshot_leak_warnings"] = fewshot_leak_warnings
+
+    mixup_warnings = check_procedural_substantive_mixup(memo)
+    results["mixup_warnings"] = mixup_warnings
+
+    proc_in_sub_warnings = check_procedural_in_substantive_section(memo)
+    results["proc_in_sub_warnings"] = proc_in_sub_warnings
+
+    intent_warnings = check_intent_vs_negligence_logic(memo, legal_nature)
+    results["intent_warnings"] = intent_warnings
+
+    if struct_score >= 0.7:
+        critic_result = legal_coherence_critic(memo, crime_type, legal_nature, case_facts)
+    else:
+        critic_result = {"issues": []}
+
+    critic_issues = critic_result.get("issues", [])
+    critic_high = [i for i in critic_issues if i.get("severity") == "high"]
+
+    if proc_in_sub_warnings:
+        wrong_direction = [
+            i for i in critic_high
+            if "بطلان الإجراءات" in i.get("description", "")
+            and ("موضوعي" in i.get("description", ""))
+        ]
+        critic_high = [i for i in critic_high if i not in wrong_direction]
+
+    critic_mixup_claims = [
+        i for i in critic_issues
+        if i.get("severity") == "high"
+        and ("شكلي" in i.get("description", "") or "موضوعي" in i.get("description", ""))
+    ]
+    if critic_mixup_claims and not mixup_warnings and not proc_in_sub_warnings:
+        critic_high = [i for i in critic_high if i not in critic_mixup_claims]
+
+    results["critic_issues"] = critic_issues
+
+    citation_fidelity = check_citation_fidelity(memo, cassation_used)
+    has_available_sources = len(citation_fidelity["source_citations"]) > 0
+    has_any_citation_in_memo = len(citation_fidelity["memo_citations"]) > 0
+    crime_is_known = crime_type in CRIME_CATEGORIES
+    results["ignored_available_citations"] = (
+        crime_is_known and has_available_sources and not has_any_citation_in_memo
+    )
+
+    results["passed"] = (
+        struct_score >= 0.8
+        and len(unverified) == 0
+        and len(contamination_warnings) == 0
+        and len(citation_fidelity["unverified_citations"]) == 0
+        and len(citation_fidelity["unverified_quotes"]) == 0
+        and not results["ignored_available_citations"]
+        and len(fewshot_leak_warnings) == 0
+        and len(mixup_warnings) == 0
+        and len(proc_in_sub_warnings) == 0
+        and len(intent_warnings) == 0
+        and len(procedural_not_requested_warnings) == 0
+        and len(critic_high) == 0
+    )
+
+    return results
+
+
+def _count_deterministic_issues(val: dict) -> int:
+    """عدّاد صادق يشمل كل أسباب الفشل الفعلية."""
+    list_based = sum(len(val.get(k, [])) for k in [
+        'mixup_warnings', 'proc_in_sub_warnings', 'intent_warnings',
+        'contamination_warnings', 'fewshot_leak_warnings',
+        'request_consistency_warnings',
+    ])
+    list_based += len(val.get('unverified_articles', []))
+    cf = val.get('citation_fidelity', {})
+    list_based += len(cf.get('unverified_citations', []))
+    list_based += len(cf.get('unverified_quotes', []))
+    list_based += 1 if val.get('ignored_available_citations') else 0
+    return list_based
+
+
+def _build_correction_prompt(system_prompt: str, memo: str,
+                              validation: dict) -> str:
+    """بناء برومبت التصحيح من ملاحظات الـ Validator."""
+    feedback_parts = []
+
+    for issue in validation.get("critic_issues", []):
+        feedback_parts.append(
+            f"  - [{issue.get('severity', '?')}] {issue.get('description', '')}"
         )
 
+    for key, label in [
+        ("mixup_warnings", "خلط شكلي/موضوعي"),
+        ("proc_in_sub_warnings", "دفع شكلي في قسم الموضوعية"),
+        ("intent_warnings", "خطأ قصد/خطأ"),
+        ("contamination_warnings", "تلوث أنواع جرائم"),
+        ("fewshot_leak_warnings", "تسريب من المثال الثابت"),
+        ("request_consistency_warnings", "تناقض الطلبات مع الدفوع"),
+    ]:
+        for w in validation.get(key, []):
+            feedback_parts.append(f"  - [high] {label}: {w}")
 
-@app.get("/api/memo/{job_id}/logs")
-def get_memo_logs(job_id: str):
-    with _jobs_lock:
-        job = _jobs.get(job_id)
-        if job is None:
-            raise HTTPException(status_code=404, detail="job_id مش موجود")
-        return {"job_id": job_id, "logs": job["logs"]}
+    for key, label in [
+        ("mixup_warnings", "خلط شكلي/موضوعي"),
+        ("intent_warnings", "خطأ قصد/خطأ"),
+        ("contamination_warnings", "تلوث أنواع جرائم"),
+        ("fewshot_leak_warnings", "تسريب من المثال الثابت"),
+        ("request_consistency_warnings", "تناقض الطلبات مع الدفوع"),
+    ]:
+        for w in validation.get(key, []):
+            feedback_parts.append(f"  - [high] {label}: {w}")
 
-
-@app.post("/api/memo/{job_id}/save")
-def save_memo(job_id: str, payload: SaveSectionsRequest):
-    """لحفظ تعديلات يدوية عملتها المحامية في الفرونت (contentEditable) —
-    بيعيد بناء نص المذكرة الكامل من الأقسام المعدّلة عشان أي chat-edit
-    بعد كده يشتغل على النسخة المحفوظة."""
-    with _jobs_lock:
-        job = _jobs.get(job_id)
-        if job is None:
-            raise HTTPException(status_code=404, detail="job_id مش موجود")
-        if job["status"] != JobStatus.COMPLETED:
-            raise HTTPException(status_code=409, detail="المذكرة لسه مش جاهزة")
-
-        result = job["result"]
-        result["sections"] = payload.sections
-        result["memo"] = reconstruct_memo(result["header"], payload.sections)
-        return {"success": True}
-
-
-@app.post("/api/memo/chat")
-def chat_edit(payload: ChatEditRequest):
-    """شات تفاعلي حقيقي: بيحدد أي قسم المحامية قاصداه، يعدّله عبر الـ LLM،
-    يشغّل عليه نفس فحوصات pipeline.py القانونية (تلوث أنواع جرائم، خلط
-    شكلي/موضوعي، تعارض قصد/خطأ)، ويرفض حذف أي قسم إلزامي بدل ما ينفذ أي
-    أمر حرفياً."""
-    with _jobs_lock:
-        job = _jobs.get(payload.job_id)
-        if job is None:
-            raise HTTPException(status_code=404, detail="job_id مش موجود")
-        if job["status"] != JobStatus.COMPLETED:
-            raise HTTPException(status_code=409, detail="المذكرة لسه مش جاهزة")
-
-    try:
-        response = _handle_chat_edit(job, payload.message)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"فشل التعديل: {e}")
-
-    response.setdefault("switch_task", None)
-
-    with _jobs_lock:
-        job["chat_history"].append({"role": "user", "message": payload.message})
-        job["chat_history"].append({"role": "assistant", "message": response["reply"]})
-
-    db_session_id = job.get("db_session_id")
-    if db_session_id:
-        try:
-            repo.append_chat_message(db_session_id, "user", payload.message)
-            repo.append_chat_message(db_session_id, "assistant", response["reply"],
-                                      change_card=response.get("change_card"))
-            # لو التعديل فعلاً غيّر الأقسام، خزّني النسخة المحدّثة كمان
-            if response.get("updated_sections") is not None:
-                result = job["result"]
-                repo.save_memo_result(
-                    db_session_id, result["sections"], result["case_metadata"],
-                    result.get("sources", {}), result["memo"],
-                )
-            repo.touch_session(db_session_id)
-        except Exception as e:
-            print(f"⚠️ فشل حفظ رسائل الشات في الداتابيز: {e}")
-
-    return response
-
-
-class ResumeResponse(BaseModel):
-    job_id: str
-    status: str
-    db_session_id: Optional[str] = None
-    chat_history: list[dict] = []
-
-
-@app.post("/api/memo/{session_id}/resume", response_model=ResumeResponse)
-def resume_memo(session_id: str, user: CurrentUser = Depends(get_current_user)):
-    """بتفعّل جلسة مذكرة قديمة (اتقفلت الصفحة أو السيرفر عمل ريستارت) عشان
-    الشات يقدر يكمل عليها — بتبني _jobs entry جديدة من النتيجة المحفوظة في
-    memo_results + تاريخ الشات من chat_messages، وترجع job_id جديد تستخدمه
-    الفرونت في /api/memo/chat و/api/memo/{job_id}/save زي أي جلسة عادية
-    (بديل عن setMemoJobId(null) اللي كانت بتمنع أي تعديل بعد إعادة فتح الجلسة)."""
-    require_session_access(session_id, user)
-    session = repo.get_session(session_id)
-    if session is None or session.get("type") != "memo":
-        raise HTTPException(status_code=404, detail="جلسة مذكرة مش موجودة")
-
-    memo_result = repo.get_memo_result(session_id)
-    if memo_result is None:
-        raise HTTPException(status_code=409, detail="مفيش نتيجة محفوظة للمذكرة دي لسه")
-
-    memo_text = memo_result.get("memo_text") or ""
-    header, split_sections = split_memo_into_sections(memo_text)
-    # الأقسام المحفوظة (ممكن تكون اتعدلت يدوي أو بالشات) بتتفضّل على الـ
-    # split التلقائي — لكن الـ header مش متخزن لوحده في الداتابيز فلازم من
-    # الـ split دايماً
-    sections = memo_result.get("sections") or split_sections
-    case_metadata = memo_result.get("case_metadata") or {}
-
-    # case_facts الكامل (بالوقائع/الأقوال التفصيلية) مش متخزن في الداتابيز —
-    # بنبني نسخة مختصرة منه من case_metadata عشان فحوصات run_legal_checks
-    # (زي check_crime_type_contamination) تفضل شغالة على أي تعديل شات بعد
-    # الاستئناف، حتى من غير نفس التفاصيل السردية الكاملة اللي كانت موجودة
-    # وقت التوليد الأول
-    case_facts_lite = "\n".join(
-        f"{label}: {case_metadata.get(key) or '[غير محدد]'}"
-        for label, key in (
-            ("اسم المتهم", "defendant_name"),
-            ("نوع الجريمة", "charge"),
-            ("رقم القضية", "case_number"),
-            ("المحكمة", "court"),
+    if validation.get("proc_in_sub_warnings"):
+        feedback_parts.append(
+            "  - [high] ⚠️⚠️ تعليمة حاسمة يجب تنفيذها بالحرف: يوجد دفع بطلان إجراءات "
+            "مكتوب خطأً تحت قسم 'الدفوع الموضوعية'. احذفيه بالكامل من قسم ثالثاً، "
+            "وانقليه بصياغة كاملة إلى قسم 'ثانياً: الدفوع الشكلية' تشرح العيب الإجرائي "
+            "الفعلي في الوقائع. ممنوع ترك جملة 'لا توجد دفوع شكلية جوهرية' في قسم ثانياً "
+            "طالما هذا الدفع الإجرائي حقيقي وموجود فعلاً."
         )
-    )
 
-    db_chat_history = repo.get_chat_history(session_id)
+    if validation.get("unverified_articles"):
+        feedback_parts.append(
+            f"  - [high] مواد قانونية غير موثقة: {validation['unverified_articles']}"
+        )
 
-    job_id = str(uuid.uuid4())
-    with _jobs_lock:
-        _jobs[job_id] = {
-            "status": JobStatus.COMPLETED,
-            "progress": 1.0,
-            "stage": None,
-            "logs": [],
-            "last_log": None,
-            "input": {"raw_text": session.get("prompt") or ""},
-            "result": {
-                "memo": memo_text,
-                "header": header,
-                "sections": sections,
-                "case_metadata": case_metadata,
-                "crime_type": case_metadata.get("crime_type"),
-                "legal_nature": case_metadata.get("legal_nature"),
-                "correction_rounds": None,
-                "validation": None,
-                "case_facts": case_facts_lite,
-                "sources": memo_result.get("sources") or {},
-            },
-            "error": None,
-            "chat_history": [
-                {"role": m["role"], "message": m["text"]} for m in db_chat_history
-            ],
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "db_session_id": session_id,
-        }
+    unv_cit = validation.get("citation_fidelity", {}).get("unverified_citations", [])
+    if unv_cit:
+        feedback_parts.append(
+            f"  - [high] أرقام طعون غير موجودة في المصادر: {unv_cit}"
+        )
+    unv_quotes = validation.get("citation_fidelity", {}).get("unverified_quotes", [])
+    if unv_quotes:
+        feedback_parts.append(
+            "  - [high] توجد اقتباسات بين علامتي تنصيص غير موجودة حرفياً في "
+            "المصادر — احذف علامات التنصيص أو أعد صياغة المبدأ بأسلوبك دون اقتباس وهمي."
+        )
 
-    return ResumeResponse(
-        job_id=job_id, status=JobStatus.COMPLETED,
-        db_session_id=session_id, chat_history=db_chat_history,
-    )
+    structural = validation.get("structural", {})
+    if not structural.get("الطلبات الإجرائية", True):
+        feedback_parts.append(
+            "  - [high] قسم 'خامساً: الطلبات الإجرائية المصاحبة' مفقود تماماً من "
+            "المذكرة — أعد كتابته بالكامل في نهاية المذكرة مع 2-3 طلبات إجرائية "
+            "مناسبة لوقائع القضية بصيغة 'يُلتمس'."
+        )
+    if not structural.get("طلب أصلي", True):
+        feedback_parts.append(
+            "  - [high] صيغة الطلب الأصلي يجب أن تبدأ حرفياً بـ 'أولاً وبصفة "
+            "أصلية:' — لا يجوز اختصارها لمجرد 'أولاً:'. التزم بصيغة القالب الإلزامي بالحرف."
+        )
+    if not structural.get("طلب احتياطي", True):
+        feedback_parts.append(
+            "  - [high] صيغة الطلب الاحتياطي يجب أن تبدأ حرفياً بـ 'ثانياً "
+            "واحتياطياً عن الأول:' — لا يجوز اختصارها. التزم بصيغة القالب الإلزامي بالحرف."
+        )
 
+    if not feedback_parts:
+        return ""
 
-@app.post("/api/contract/{session_id}/resume", response_model=ResumeResponse)
-def resume_contract(session_id: str, user: CurrentUser = Depends(get_current_user)):
-    """نفس فكرة resume_memo بس للعقود. تنويه: preamble/closing (مقدمة
-    العقد وخاتمة التوقيعات) مش متخزنين في contract_results — بس البنود
-    (clauses) ونوع العقد. يعني العقد المُعاد بناؤه هنا من غير مقدمة ولا
-    خاتمة توقيعات؛ لو الشات بعد الاستئناف عدّل وحفظ، هتفتقد الجزءين دول
-    من النسخة النهائية. لتفادي كده بالكامل لازم schema change (تخزين
-    preamble/closing كمان في contract_results) — مش متعمول لسه."""
-    require_session_access(session_id, user)
-    session = repo.get_session(session_id)
-    if session is None or session.get("type") != "contract":
-        raise HTTPException(status_code=404, detail="جلسة عقد مش موجودة")
+    feedback_text = "\n".join(feedback_parts)
 
-    contract_result = repo.get_contract_result(session_id)
-    if contract_result is None:
-        raise HTTPException(status_code=409, detail="مفيش نتيجة محفوظة للعقد ده لسه")
+    return f"""{system_prompt}
 
-    clauses = contract_result.get("clauses") or []
-    contract_type_ar = contract_result.get("contract_type_ar") or ""
-    contract_text = _reconstruct_contract("", clauses, "")  # من غير preamble/closing — شايفة التنويه فوق
+{"=" * 65}
+⚠️ ملاحظات المراجع القانوني على المسودة السابقة — أصلحها فوراً
+{"=" * 65}
+{feedback_text}
 
-    db_chat_history = repo.get_chat_history(session_id)
+{"=" * 65}
+✅ المذكرة السابقة (أعد كتابتها بالكامل مع تصحيح الملاحظات أعلاه)
+{"=" * 65}
+{memo}
 
-    job_id = str(uuid.uuid4())
-    with _contract_jobs_lock:
-        _contract_jobs[job_id] = {
-            "status": JobStatus.COMPLETED,
-            "progress": 1.0,
-            "stage": None,
-            "logs": [],
-            "last_log": None,
-            "input": {"query": session.get("prompt") or ""},
-            "result": {
-                "contract_text": contract_text,
-                "preamble": "",
-                "closing": "",
-                "clauses": clauses,
-                "contract_type_key": None,
-                "contract_type_ar": contract_type_ar,
-                "clause_validation": {},
-                "docx_path": None,
-            },
-            "error": None,
-            "chat_history": [
-                {"role": m["role"], "message": m["text"]} for m in db_chat_history
-            ],
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "db_session_id": session_id,
-        }
-
-    return ResumeResponse(
-        job_id=job_id, status=JobStatus.COMPLETED,
-        db_session_id=session_id, chat_history=db_chat_history,
-    )
+تعليمات التصحيح:
+1. أصلح كل ملاحظة واردة أعلاه بالضبط.
+2. أعد كتابة المذكرة كاملة بأقسامها الخمسة — لا تحذف أي قسم كان موجوداً في
+   المسودة السابقة حتى لو لم يُذكر في الملاحظات أعلاه.
+3. لا تُضف ملاحظاتك أو تعليقاتك على الملاحظات — اكتب المذكرة فقط.
+4. التزم بالهيكل الإلزامي والقواعد الصارمة الأصلية بالكامل، وبالصيغة الحرفية
+   "أولاً وبصفة أصلية" و"ثانياً واحتياطياً عن الأول" في قسم الطلبات الختامية."""
 
 
-# ════════════════════════════════════════════════════════════════════
-# نظام إنشاء العقود — نفس نمط المذكرات (job queue + polling + chat)
-# ════════════════════════════════════════════════════════════════════
+def draft_defense_memo(
+    case_facts: str,
+    top_k_cassation: int = 4,
+    top_k_laws: int = 4,
+    top_k_memos: int = 3,
+    max_correction_rounds: int = 2,
+    verbose: bool = True,
+) -> dict:
+    """الـ Pipeline الكامل: استرجاع → توسيع وقائع → بناء برومبت → توليد → تحقق → تصحيح."""
+    if verbose:
+        print("📚 [1/5] جاري الاسترجاع الذكي من Qdrant...")
+    retrieved = smart_retrieve_all(case_facts, top_k_cassation, top_k_laws, top_k_memos)
+    cassation = retrieved["cassation"]
+    laws = retrieved["laws"]
+    qa = retrieved["qa"]
+    memos = retrieved["memos"]
+    crime_type = retrieved["crime_type"]
+    legal_nature = retrieved["legal_nature"]
+    total = len(cassation) + len(laws) + len(qa) + len(memos)
+    if verbose:
+        print(f"   ✅ {total} مصدر")
 
-# ── Contract Job store ──────────────────────────────────────────────────────
-_contract_jobs: dict[str, dict] = {}
-_contract_jobs_lock = threading.Lock()
-_contract_work_queue: "queue.Queue[str]" = queue.Queue()
+    if verbose:
+        print("🧠 [2/5] توسيع الوقائع...")
+    rich_facts = expand_facts_and_extract_logic(case_facts, retrieved)
 
+    if verbose:
+        print("🏗️  [3/5] بناء الـ prompt...")
+    context_block = build_context_block(cassation, laws, qa, memos, laws2=retrieved.get("laws2"))
+    system_prompt = build_system_prompt(context_block, crime_type, legal_nature)
 
-class _ContractStageTracker:
-    """يشتغل زي _StageTracker بس للعقود — بيلقط print() من contract_pipeline."""
-    def __init__(self, job_id: str):
-        self.job_id = job_id
+    if verbose:
+        print("✍️  [4/5] التوليد (استدعاء واحد، retry متدرج عند الحاجة)...")
+    memo = generate_memo(rich_facts, system_prompt)
 
-    def write(self, text: str):
-        sys.__stdout__.write(text)
-        stripped = text.strip()
-        if not stripped:
-            return
-        with _contract_jobs_lock:
-            job = _contract_jobs.get(self.job_id)
-            if job is not None:
-                job["last_log"] = stripped
-                job["logs"].append(stripped)
-                job["stage"] = stripped
-                m = re.search(r"(\d+)/(\d+)", stripped)
-                if m and ("اتولّد" in stripped or "بند" in stripped):
-                    job["progress"] = int(m.group(1)) / int(m.group(2))
+    if verbose:
+        print("✅  [5/5] التحقق...")
 
-    def flush(self):
-        sys.__stdout__.flush()
+    correction_round = 0
+    for attempt in range(max_correction_rounds + 1):
+        val = validate_memo(
+            memo, laws, cassation,
+            crime_type=crime_type, legal_nature=legal_nature, case_facts=case_facts,
+        )
 
-
-def _parse_contract_clauses(contract_text: str) -> tuple[str, str, list[dict]]:
-    """يفصل العقد لـ: preamble + clauses list + closing."""
-    preamble = ""
-    closing = ""
-    clauses = []
-
-    lines = contract_text.split("\n")
-    clause_pattern = re.compile(r"^البند\s+(\d+)\s*[—\-]\s*(.+?):\s*")
-
-    current_clause = None
-    current_lines = []
-    section = "preamble"
-
-    for line in lines:
-        m = clause_pattern.match(line.strip())
-        if m:
-            if current_clause is not None:
-                current_clause["body"] = "\n".join(current_lines).strip()
-                clauses.append(current_clause)
-            elif section == "preamble" and current_lines:
-                preamble = "\n".join(current_lines).strip()
-
-            current_clause = {
-                "index": int(m.group(1)),
-                "title": m.group(2).strip(),
-                "body": "",
-            }
-            current_lines = [line[m.end():].strip()] if m.end() < len(line) else []
-            section = "clauses"
-        elif section == "clauses":
-            current_lines.append(line)
-        else:
-            current_lines.append(line)
-
-    if current_clause is not None:
-        current_clause["body"] = "\n".join(current_lines).strip()
-        clauses.append(current_clause)
-
-    # فصل الـ closing
-    if clauses:
-        last_body = clauses[-1]["body"]
-        closing_marker = last_body.find("الطرف الأول: التوقيع")
-        if closing_marker > 0:
-            closing = last_body[closing_marker:].strip()
-            clauses[-1]["body"] = last_body[:closing_marker].strip()
-
-    return preamble, closing, clauses
-
-
-def _reconstruct_contract(preamble: str, clauses: list[dict], closing: str) -> str:
-    """يعيد بناء نص العقد الكامل."""
-    parts = [preamble]
-    for c in clauses:
-        parts.append(f"البند {c['index']} — {c['title']}: {c['body']}")
-    if closing:
-        parts.append(closing)
-    return "\n\n".join(p for p in parts if p)
-
-
-def _run_contract_job(job_id: str):
-    with _contract_jobs_lock:
-        job = _contract_jobs[job_id]
-        job["status"] = JobStatus.PROCESSING
-        job["started_at"] = datetime.now(timezone.utc).isoformat()
-        job_input = job["input"]
-
-    tracker = _ContractStageTracker(job_id)
-    try:
-        with redirect_stdout(tracker):
-            result = cp.generate_contract(job_input["query"])
-
-        contract_text = result.get("contract_text")
-        if not contract_text:
-            raise RuntimeError("لم يتم توليد نص العقد")
-
-        preamble, closing, clauses = _parse_contract_clauses(contract_text)
-
-        with _contract_jobs_lock:
-            job["status"] = JobStatus.COMPLETED
-            job["progress"] = 1.0
-            job["stage"] = "تم الانتهاء من توليد العقد"
-            job["finished_at"] = datetime.now(timezone.utc).isoformat()
-            job["chat_history"] = []
-            job["result"] = {
-                "contract_text": contract_text,
-                "preamble": preamble,
-                "closing": closing,
-                "clauses": clauses,
-                "contract_type_key": result.get("contract_type_key"),
-                "contract_type_ar": cp.load_clause_types().get(
-                    result.get("contract_type_key", ""), {}
-                ).get("contract_type_ar", ""),
-                "clause_validation": result.get("clause_validation", {}),
-                "docx_path": result.get("docx_path"),
-            }
-
-        db_session_id = job.get("db_session_id")
-        if db_session_id:
-            try:
-                repo.save_contract_result(
-                    db_session_id, clauses, job["result"]["contract_type_ar"],
-                )
-                repo.touch_session(db_session_id, title=job["result"]["contract_type_ar"] or None)
-            except Exception as e:
-                print(f"⚠️ فشل حفظ نتيجة العقد في الداتابيز: {e}")
-    except Exception as e:
-        with _contract_jobs_lock:
-            job["status"] = JobStatus.FAILED
-            job["finished_at"] = datetime.now(timezone.utc).isoformat()
-            job["error"] = str(e)
-            job["traceback"] = traceback.format_exc()
-
-
-def _contract_worker_loop():
-    while True:
-        job_id = _contract_work_queue.get()
-        try:
-            _run_contract_job(job_id)
-        finally:
-            _contract_work_queue.task_done()
-
-
-_contract_worker_thread = threading.Thread(target=_contract_worker_loop, daemon=True)
-_contract_worker_thread.start()
-
-
-# ── Contract Chat-Edit ──────────────────────────────────────────────────────
-
-CONTRACT_DELETE_KEYWORDS = ["امسح", "احذف", "شيل", "الغي", "الغِ", "أزيل"]
-
-
-def _classify_contract_clause(message: str, clauses: list[dict]) -> int | None:
-    """يحدد أي بند المستخدم قاصده."""
-    nums = {"اول":1,"ثاني":2,"ثانٍ":2,"ثالث":3,"ثالثٍ":3,"رابع":4,"رابعٍ":4,
-            "خامس":5,"خامسٍ":5,"سادس":6,"سابع":7,"ثامن":8,"تاسع":9,"عاشر":10}
-    for word, num in nums.items():
-        if word in message:
-            if any(c["index"] == num for c in clauses):
-                return num
-
-    m = re.search(r"بند\s*(\d+)", message)
-    if m:
-        num = int(m.group(1))
-        if any(c["index"] == num for c in clauses):
-            return num
-
-    message_lower = message.strip()
-    for clause in clauses:
-        title = clause["title"]
-        title_words = [w for w in title.split() if len(w) > 2]
-        if title_words and any(w in message_lower for w in title_words):
-            return clause["index"]
-
-    return None
-
-
-def _rewrite_contract_clause(clause: dict, message: str, contract_type_ar: str,
-                              rag_resources: dict) -> str:
-    """يعيد صياغة بند واحد بناءً على طلب الشات."""
-    clause_types_db = cp.load_clause_types()
-    contract_type_key = None
-    for key, val in clause_types_db.items():
-        if val.get("contract_type_ar") == contract_type_ar:
-            contract_type_key = key
+        if val["passed"] or attempt >= max_correction_rounds:
             break
 
-    description = clause.get("description", "")
-    if contract_type_key:
-        for c in clause_types_db[contract_type_key].get("specific_clauses", []):
-            if c.get("title") == clause["title"]:
-                description = c.get("description", "")
-                break
+        correction_prompt = _build_correction_prompt(system_prompt, memo, val)
+        if not correction_prompt:
+            break
 
-    modified_clause = {
-        "title": clause["title"],
-        "description": f"{description}. تعديل مطلوب: {message}"
-    }
+        correction_round = attempt + 1
+        if verbose:
+            det_checks = _count_deterministic_issues(val)
+            print(f"\n🔄 [Self-Correction] جولة التصحيح {correction_round}/{max_correction_rounds}")
+            print(f"   ملاحظات: {len(val.get('critic_issues', []))} ناقد + {det_checks} فحص حتمي")
 
-    search_query = f"{clause['title']}. {description}. {message}".strip()
-    laws_context = cp.retrieve_laws_context(search_query, rag_resources, top_k=3)
+        memo = generate_memo(rich_facts, correction_prompt)
 
-    return cp.generate_single_clause(modified_clause, contract_type_ar, laws_context)
+        if verbose:
+            print("   ✅ أُعيد التوليد — جاري إعادة التحقق...")
 
-
-def _answer_contract_question(message: str, clauses: list[dict]) -> str:
-    """يرد على سؤال معلوماتي عن العقد (مرجع قانوني لبند معين، توضيح، إلخ)
-    عن طريق استرجاع مباشر من قاعدة القوانين — من غير ما يعدّل العقد."""
-    rag_resources = cp.load_rag_resources()
-    laws_context = cp.retrieve_laws_context(message, rag_resources, top_k=4)
-    clauses_text = "\n\n".join(f"بند {c['index']} - {c['title']}:\n{c['body']}" for c in clauses)
-
-    prompt = f"""أنتِ مساعدة قانونية بترد على سؤال عن عقد. جاوبي بالاستناد فقط
-للمرجع القانوني الموجود تحت — ممنوع تخترعي مادة قانونية مش موجودة. لو المرجع
-غير متاح، قولي بوضوح إن معندكيش مرجع قانوني محدد لده.
-
-## بنود العقد الحالية:
-{clauses_text}
-
-## مرجع قانوني متاح:
-{laws_context or 'لا يوجد مرجع قانوني ذو صلة متاح.'}
-
-## سؤال المستخدم:
-{message}
-
-جاوبي بإيجاز ودقة:"""
-
-    return pipeline.llm_text([{"role": "user", "content": prompt}],
-                              temperature=0.1, max_tokens=600)
-
-
-def _handle_contract_chat_edit(job: dict, message: str) -> dict:
-    result = job["result"]
-    clauses = result["clauses"]
-    contract_type_ar = result.get("contract_type_ar", "")
-
-    action = _classify_chat_action(message, "contract")
-    if action["action"] == "switch_task":
-        new_intent = action["new_intent"]
-        return {
-            "reply": f"تمام، فهمت إنك عايز {TASK_LABELS[new_intent]} — هحوّلك دلوقتي.",
-            "updated_clauses": None,
-            "change_card": None,
-            "switch_task": {"intent": new_intent, "enriched_prompt": message},
-        }
-    if action["action"] == "question":
-        answer = _answer_contract_question(message, clauses)
-        return {
-            "reply": answer,
-            "updated_clauses": None,
-            "change_card": None,
-            "switch_task": None,
-        }
-
-    target_idx = _classify_contract_clause(message, clauses)
-    is_delete = any(k in message for k in CONTRACT_DELETE_KEYWORDS)
-
-    if target_idx is None and is_delete:
-        return {
-            "reply": "مش واضحلي تقصد أي بند بالظبط — ممكن توضح رقم البند أو عنوانه؟",
-            "updated_clauses": None,
-            "change_card": None,
-        }
-
-    if target_idx is None:
-        return {
-            "reply": f"فهمت. العقد فيه {len(clauses)} بند. قولي بالضبط إيه اللي عايز تعدّله (مثلاً: عدّل بند 3، أو عدّل بند الثمن).",
-            "updated_clauses": None,
-            "change_card": None,
-        }
-
-    clause = next((c for c in clauses if c["index"] == target_idx), None)
-    if clause is None:
-        return {
-            "reply": f"لم أجد بند رقم {target_idx}.",
-            "updated_clauses": None,
-            "change_card": None,
-        }
-
-    if is_delete:
-        old_body = clause["body"]
-        updated_clauses = [c for c in clauses if c["index"] != target_idx]
-        for i, c in enumerate(updated_clauses, start=1):
-            c["index"] = i
-        new_text = _reconstruct_contract(result["preamble"], updated_clauses, result["closing"])
-        result["clauses"] = updated_clauses
-        result["contract_text"] = new_text
-        return {
-            "reply": f"تم حذف بند {target_idx} — \"{clause['title']}\".",
-            "updated_clauses": updated_clauses,
-            "change_card": {
-                "clause_index": target_idx,
-                "clause_title": clause["title"],
-                "old_text": old_body,
-                "new_text": "[محذوف]",
-            },
-        }
-
-    old_body = clause["body"]
-    rag_resources = cp.load_rag_resources()
-    new_body = _rewrite_contract_clause(clause, message, contract_type_ar, rag_resources)
-
-    updated_clauses = [
-        {**c, "body": new_body} if c["index"] == target_idx else c
-        for c in clauses
-    ]
-    new_text = _reconstruct_contract(result["preamble"], updated_clauses, result["closing"])
-
-    result["clauses"] = updated_clauses
-    result["contract_text"] = new_text
+    if verbose:
+        status = "PASSED ✅" if val["passed"] else "NEEDS REVIEW ⚠️"
+        print(f"\n   🏁 {status} — اكتمال: {val['structural_score'] * 100:.0f}%"
+              f"{' (بعد ' + str(correction_round) + ' جولة تصحيح)' if correction_round > 0 else ''}")
+        if val["mixup_warnings"]:
+            print(f"   ⚠️  خلط شكلي/موضوعي: {val['mixup_warnings']}")
+        if val.get("proc_in_sub_warnings"):
+            print(f"   ⚠️  دفع شكلي في الموضوعية: {val['proc_in_sub_warnings']}")
+        if val["intent_warnings"]:
+            print(f"   ⚠️  خطأ قصد/خطأ: {val['intent_warnings']}")
+        if val.get("ignored_available_citations"):
+            print("   ⚠️  المذكرة تجاهلت أحكام نقض متاحة في المصادر")
+        if not val["structural"].get("الطلبات الإجرائية", True):
+            print("   ⚠️  قسم 'خامساً: الطلبات الإجرائية' مفقود من المذكرة النهائية")
+        if val["critic_issues"]:
+            print("   ⚠️  ملاحظات الناقد القانوني:")
+            for i in val["critic_issues"]:
+                print(f"      [{i.get('severity')}] {i.get('description')}")
 
     return {
-        "reply": f"عدّلت بند {target_idx} — \"{clause['title']}\" حسب طلبك.",
-        "updated_clauses": updated_clauses,
-        "change_card": {
-            "clause_index": target_idx,
-            "clause_title": clause["title"],
-            "old_text": old_body,
-            "new_text": new_body,
-        },
+        "memo": memo,
+        "validation": val,
+        "crime_type": crime_type,
+        "legal_nature": legal_nature,
+        "sources": retrieved,
+        "correction_rounds": correction_round,
     }
 
 
-# ── Contract Request/Response Models ────────────────────────────────────────
+if __name__ == "__main__":
+    USER_RAW_INPUT = """
+اكتبي هنا كلام المحامي الحر — أي أسلوب، أي ترتيب، فقرة أو أكتر.
+النظام يستخرج البيانات المطلوبة تلقائياً عبر extract_intake_from_freetext.
+"""
 
-class GenerateContractRequest(BaseModel):
-    query: str
+    TEST_QUERY = build_case_from_freetext(USER_RAW_INPUT)
+    print(f"\n📋 Case facts المُولَّدة جاهزة (طولها: {len(TEST_QUERY)} حرف)\n")
 
+    print("=" * 70)
+    print("🚀 End-to-End Test")
+    print("=" * 70 + "\n")
 
-class ContractChatEditRequest(BaseModel):
-    job_id: str
-    message: str
+    result = draft_defense_memo(TEST_QUERY)
 
+    print("\n" + "=" * 70)
+    print("📄 المذكرة النهائية:")
+    print("=" * 70)
+    print(result["memo"])
 
-# ── Contract Endpoints ──────────────────────────────────────────────────────
+    print("\n" + "=" * 70)
+    val = result["validation"]
+    print(f"🏁 Validation: {'PASSED ✅' if val['passed'] else 'NEEDS REVIEW ⚠️'}")
+    print(f"📊 اكتمال الهيكل: {val['structural_score'] * 100:.0f}%")
 
-@app.post("/api/contract/generate", response_model=JobResponse)
-def generate_contract_endpoint(payload: GenerateContractRequest, user: "CurrentUser | None" = Depends(try_get_current_user)):
-    """يبدأ توليد عقد ويرجع job_id — الفرونت يعمل polling."""
-    if not payload.query or not payload.query.strip():
-        raise HTTPException(status_code=400, detail="query فاضي")
+    if val["unverified_articles"]:
+        print(f"⚠️  مواد غير موثقة: {val['unverified_articles']}")
+    else:
+        print("✅ كل المواد القانونية موثقة")
 
-    db_session_id = None
-    if user:
-        try:
-            session_row = repo.create_session(
-                user.firm_id, user.user_id, "contract",
-                title=payload.query.strip()[:60], prompt=payload.query,
-            )
-            db_session_id = str(session_row["id"])
-        except Exception as e:
-            print(f"⚠️ فشل حفظ الجلسة في الداتابيز (هتكمل من غير حفظ دائم): {e}")
+    if val["contamination_warnings"]:
+        print("⚠️  تحذيرات خلط بين أنواع الجرائم:")
+        for w in val["contamination_warnings"]:
+            print(f"   - {w}")
+    else:
+        print("✅ لا يوجد خلط مكتشف بين أنواع الجرائم")
 
-    job_id = str(uuid.uuid4())
-    with _contract_jobs_lock:
-        _contract_jobs[job_id] = {
-            "status": JobStatus.QUEUED,
-            "progress": 0.0,
-            "stage": None,
-            "logs": [],
-            "last_log": None,
-            "input": payload.model_dump(),
-            "result": None,
-            "error": None,
-            "chat_history": [],
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "db_session_id": db_session_id,
-        }
-    _contract_work_queue.put(job_id)
-    return JobResponse(job_id=job_id, status=JobStatus.QUEUED, db_session_id=db_session_id)
+    _cf = val["citation_fidelity"]
+    if _cf["unverified_citations"] or _cf["unverified_quotes"]:
+        print("⚠️  مشاكل في دقة الاستشهاد بأحكام النقض:")
+        if _cf["unverified_citations"]:
+            print(f"   - أرقام طعون غير موجودة في المصادر: {_cf['unverified_citations']}")
+        if _cf["unverified_quotes"]:
+            for q in _cf["unverified_quotes"]:
+                print(f"   - اقتباس مشتبه فيه: \"{q[:60]}...\"")
+    else:
+        print("✅ كل الاقتباسات من أحكام النقض موثقة بمصادرها")
 
+    if val.get("ignored_available_citations"):
+        print("⚠️  المذكرة تجاهلت أحكام نقض متاحة في المصادر رغم وجودها")
 
-@app.get("/api/contract/{job_id}", response_model=JobStatusResponse)
-def get_contract(job_id: str):
-    with _contract_jobs_lock:
-        job = _contract_jobs.get(job_id)
-        if job is None:
-            raise HTTPException(status_code=404, detail="job_id مش موجود")
-        return JobStatusResponse(
-            job_id=job_id,
-            status=job["status"],
-            progress=job["progress"],
-            stage=job.get("stage"),
-            result=job.get("result"),
-            error=job.get("error"),
-        )
-
-
-@app.post("/api/contract/chat")
-def contract_chat_edit(payload: ContractChatEditRequest):
-    """شات تعديل العقد: يحدد البند المقصود ويعيد صياغته."""
-    with _contract_jobs_lock:
-        job = _contract_jobs.get(payload.job_id)
-        if job is None:
-            raise HTTPException(status_code=404, detail="job_id مش موجود")
-        if job["status"] != JobStatus.COMPLETED:
-            raise HTTPException(status_code=409, detail="العقد لسه مش جاهز")
-
-    try:
-        response = _handle_contract_chat_edit(job, payload.message)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"فشل تعديل العقد: {e}")
-
-    response.setdefault("switch_task", None)
-
-    with _contract_jobs_lock:
-        job["chat_history"].append({"role": "user", "message": payload.message})
-        job["chat_history"].append({"role": "assistant", "message": response["reply"]})
-
-    db_session_id = job.get("db_session_id")
-    if db_session_id:
-        try:
-            repo.append_chat_message(db_session_id, "user", payload.message)
-            repo.append_chat_message(db_session_id, "assistant", response["reply"],
-                                      change_card=response.get("change_card"))
-            if response.get("updated_clauses") is not None:
-                result = job["result"]
-                repo.save_contract_result(db_session_id, result["clauses"], result.get("contract_type_ar"))
-            repo.touch_session(db_session_id)
-        except Exception as e:
-            print(f"⚠️ فشل حفظ رسائل شات العقد في الداتابيز: {e}")
-
-    return response
-
-
-@app.get("/api/contract/{job_id}/logs")
-def get_contract_logs(job_id: str):
-    with _contract_jobs_lock:
-        job = _contract_jobs.get(job_id)
-        if job is None:
-            raise HTTPException(status_code=404, detail="job_id مش موجود")
-    return {"job_id": job_id, "logs": job["logs"]}
-
-
-@app.get("/api/contract/{job_id}/download")
-def download_contract_docx(job_id: str):
-    """يرجع ملف الـ docx كملف للتحميل."""
-    with _contract_jobs_lock:
-        job = _contract_jobs.get(job_id)
-        if job is None:
-            raise HTTPException(status_code=404, detail="job_id مش موجود")
-        if job["status"] != JobStatus.COMPLETED:
-            raise HTTPException(status_code=409, detail="العقد لسه مش جاهز")
-
-    docx_path = (job.get("result") or {}).get("docx_path")
-    if not docx_path or not os.path.isfile(docx_path):
-        # نولّد ملف جديد لو ملفش أو اتمسح
-        contract_text = job["result"]["contract_text"]
-        contract_type_ar = job["result"].get("contract_type_ar", "عقد")
-        safe_name = re.sub(r'[\\/:*?"<>|]', '', contract_type_ar) or "عقد"
-        docx_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"{safe_name}.docx")
-        docx_path = cp.create_word_document(contract_text, docx_path)
-        job["result"]["docx_path"] = docx_path
-
-    filename = os.path.basename(docx_path)
-    return FileResponse(
-        path=docx_path,
-        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        filename=filename,
-    )
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# ── Firms & Sessions (الداتابيز الدائمة) ────────────────────────────────
-# مطلوب Authorization: Bearer <supabase_access_token> على كل الـ endpoints دي
-# ═══════════════════════════════════════════════════════════════════════════
-
-class CreateFirmRequest(BaseModel):
-    name: str
-
-
-@app.post("/api/firms")
-def create_firm(payload: CreateFirmRequest, user: CurrentUser = Depends(get_current_user)):
-    """أول مرة يسجّل فيها المستخدم دخول ومعندوش مكتب — بينشئله مكتب جديد
-    وهو الـ owner بتاعه. لو عنده مكتب بالفعل، استخدمي /api/firms/invite
-    بدل ما تعملي واحد جديد."""
-    if user.firm_ids:
-        raise HTTPException(status_code=409, detail="المستخدم عضو في مكتب بالفعل")
-    firm = repo.create_firm_with_owner(payload.name.strip() or "مكتبي", user.user_id)
-    return firm
-
-
-class InviteMemberRequest(BaseModel):
-    email: str
-
-
-@app.post("/api/firms/invite")
-def invite_member(payload: InviteMemberRequest, user: CurrentUser = Depends(get_current_user)):
-    """بتضيف محامية تانية (لازم تكون عملت حساب على Supabase Auth بالفعل
-    بنفس الإيميل ده) لنفس مكتب المستخدم الحالي."""
-    found_user = db_client.auth_admin_get_user_by_email(payload.email.strip().lower())
-    if not found_user:
-        raise HTTPException(status_code=404, detail="مفيش حساب مسجّل بالإيميل ده")
-    repo.add_member_to_firm(user.firm_id, found_user["id"])
-    return {"success": True}
-
-
-@app.get("/api/sessions")
-def list_sessions_endpoint(user: CurrentUser = Depends(get_current_user)):
-    """كل جلسات مكتب المستخدم (مذكرات وعقود واستشارات...) — بتغذي الـ Sidebar
-    بدل localStorage."""
-    return {"sessions": repo.list_sessions(user.firm_id)}
-
-
-@app.get("/api/sessions/{session_id}")
-def get_session_endpoint(session_id: str, user: CurrentUser = Depends(get_current_user)):
-    """تفاصيل جلسة واحدة كاملة: بياناتها + النتيجة (مذكرة أو عقد) + كل
-    تاريخ الشات — عشان تقدري تفتحيها وتكمّلي التعديل عليها بالشات."""
-    require_session_access(session_id, user)
-    session = repo.get_session(session_id)
-    if session is None:
-        raise HTTPException(status_code=404, detail="الجلسة دي مش موجودة")
-
-    result = None
-    if session["type"] == "memo":
-        result = repo.get_memo_result(session_id)
-    elif session["type"] == "contract":
-        result = repo.get_contract_result(session_id)
-
-    return {
-        "session": session,
-        "result": result,
-        "chat_history": repo.get_chat_history(session_id),
-    }
-
-
-@app.delete("/api/sessions/{session_id}")
-def delete_session_endpoint(session_id: str, user: CurrentUser = Depends(get_current_user)):
-    require_session_access(session_id, user)
-    repo.delete_session(session_id)
-    return {"success": True}
-
-
-class PinSessionRequest(BaseModel):
-    pinned: bool
-
-
-@app.post("/api/sessions/{session_id}/pin")
-def pin_session_endpoint(session_id: str, payload: PinSessionRequest, user: CurrentUser = Depends(get_current_user)):
-    require_session_access(session_id, user)
-    repo.set_pinned(session_id, payload.pinned)
-    return {"success": True}
+    if not val["structural"].get("الطلبات الإجرائية", True):
+        print("⚠️  قسم 'خامساً: الطلبات الإجرائية' مفقود من المذكرة النهائية")

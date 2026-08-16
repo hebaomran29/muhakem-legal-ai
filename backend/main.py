@@ -34,10 +34,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-import pipeline  # نفس ملف الـ pipeline من غير أي تعديل منطقي
+from memo import pipeline  # نفس ملف الـ pipeline من غير أي تعديل منطقي
 from db import repo
 from db import client as db_client
 from auth import CurrentUser, get_current_user, try_get_current_user, require_session_access
+from consultation import legal_agent
 
 # ── استيراد pipeline العقود ──────────────────────────────────────────────────
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "contracts"))
@@ -869,6 +870,71 @@ def chat_edit(payload: ChatEditRequest):
             print(f"⚠️ فشل حفظ رسائل الشات في الداتابيز: {e}")
 
     return response
+
+
+class ConsultationChatRequest(BaseModel):
+    message: str
+    session_id: Optional[str] = None  # None = يبدأ جلسة استشارة جديدة
+
+
+class ConsultationChatResponse(BaseModel):
+    session_id: Optional[str] = None
+    reply: str
+    needs_clarification: bool = False
+    routing: Optional[dict] = None
+
+
+@app.post("/api/consultation/chat", response_model=ConsultationChatResponse)
+def consultation_chat(payload: ConsultationChatRequest,
+                       user: "CurrentUser | None" = Depends(try_get_current_user)):
+    """استشارة/بحث قانوني عن الـ 7 قوانين في مجموعة laws_only — sync (مفيش
+    job queue زي المذكرات، لأن الرد بياخد ثواني مش دقايق). بترجع session_id
+    ثابت من أول رسالة (لو المستخدم مسجّل دخول) عشان تقدري تكمّلي عليه، وتغذّي
+    الـ Sidebar بنفس نمط المذكرات/العقود.
+    """
+    if not payload.message or not payload.message.strip():
+        raise HTTPException(status_code=400, detail="message فاضي")
+
+    db_session_id = payload.session_id
+    conversation_state = legal_agent.ConversationState()
+
+    if db_session_id:
+        if user:
+            require_session_access(db_session_id, user)
+        try:
+            db_history = repo.get_chat_history(db_session_id)
+            conversation_state = legal_agent.ConversationState.from_db_history(db_history)
+        except Exception as e:
+            print(f"⚠️ فشل تحميل تاريخ شات الاستشارة: {e}")
+    elif user:
+        try:
+            session_row = repo.create_session(
+                user.firm_id, user.user_id, "consultation",
+                title=payload.message.strip()[:60], prompt=payload.message,
+            )
+            db_session_id = str(session_row["id"])
+        except Exception as e:
+            print(f"⚠️ فشل حفظ جلسة الاستشارة في الداتابيز (هتكمل من غير حفظ دائم): {e}")
+
+    try:
+        result = legal_agent.answer_question(payload.message, conversation_state)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"فشلت الاستشارة: {e}")
+
+    if db_session_id:
+        try:
+            repo.append_chat_message(db_session_id, "user", payload.message)
+            repo.append_chat_message(db_session_id, "assistant", result["answer"])
+            repo.touch_session(db_session_id)
+        except Exception as e:
+            print(f"⚠️ فشل حفظ رسائل الاستشارة في الداتابيز: {e}")
+
+    return ConsultationChatResponse(
+        session_id=db_session_id,
+        reply=result["answer"],
+        needs_clarification=result.get("needs_clarification", False),
+        routing=result.get("routing"),
+    )
 
 
 class ResumeResponse(BaseModel):
