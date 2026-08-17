@@ -9,6 +9,7 @@ export type ScreenId =
   | 'report'
   | 'memo'
   | 'research'
+  | 'consultation'
   | 'history';
 
 /* ── Chat / session kinds ── */
@@ -17,6 +18,7 @@ export type ChatKind =
   | 'contract-gen'
   | 'memo'
   | 'research'
+  | 'consultation'
   | 'case';
 
 /* ── Task types (for Thinking + intent detection) ── */

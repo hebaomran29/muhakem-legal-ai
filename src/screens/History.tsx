@@ -23,6 +23,7 @@ const kindMeta: Record<ChatKind, { icon: typeof FileText; tone: 'primary' | 'acc
   'contract-gen': { icon: FileText, tone: 'primary', label: 'صياغة عقد' },
   memo: { icon: Book, tone: 'gold', label: 'مذكرة دفاع' },
   research: { icon: Scale, tone: 'primary', label: 'بحث قانوني' },
+  consultation: { icon: Scale, tone: 'accent', label: 'استشارة قانونية' },
   case: { icon: Gavel, tone: 'neutral', label: 'قضية' },
 };
 

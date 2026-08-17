@@ -33,12 +33,14 @@ const kindIcon: Record<ChatKind, typeof FileText> = {
   'contract-gen': FileText,
   memo: Book,
   research: Scale,
+  consultation: Scale,
   case: Gavel,
 };
 
 /** يحوّل الـ kind لـ ScreenId */
 function kindToScreen(kind: ChatKind): ScreenId {
   if (kind === 'research') return 'research';
+  if (kind === 'consultation') return 'consultation';
   if (kind === 'memo') return 'memo';
   if (kind === 'contract-gen') return 'contract-gen';
   return 'review';

@@ -15,6 +15,7 @@ const titleMap: Record<ScreenId, { title: string; section: string }> = {
   report: { title: 'تقرير شامل', section: 'التقارير' },
   memo: { title: 'مذكرة دفاع', section: 'الأرشيف' },
   research: { title: 'بحث قانوني', section: 'الأرشيف' },
+  consultation: { title: 'الرأي القانوني', section: 'الأرشيف' },
   history: { title: 'سجل المحادثات', section: 'الأرشيف' },
 };
 

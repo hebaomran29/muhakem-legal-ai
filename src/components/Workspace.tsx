@@ -5,6 +5,7 @@ import { ContractGen } from '../screens/ContractGen';
 import { Review } from '../screens/Review';
 import { Memo } from '../screens/Memo';
 import { Research } from '../screens/Research';
+import { Consultation } from '../screens/Consultation';
 import { QuickActionWizard } from './QuickActionWizard';
 import { useSessionChat, type TaskKind } from '../lib/useSessionChat';
 import { useMemory } from '../lib/memory';
@@ -27,7 +28,7 @@ const artifactScreenMap: Record<ArtifactType, ScreenId> = {
   review: 'review',
   memo: 'memo',
   research: 'research',
-  consultation: 'research',
+  consultation: 'consultation',
 };
 
 const artifactTitleMap: Record<ArtifactType, string> = {
@@ -45,7 +46,7 @@ function artifactToChatKind(art: ArtifactType): ChatKind {
     review: 'contract-review',
     memo: 'memo',
     research: 'research',
-    consultation: 'research',
+    consultation: 'consultation',
   };
   return map[art];
 }
@@ -221,6 +222,15 @@ export function Workspace() {
         screenId: artifactScreenMap[artifactKind],
         pinned: false,
       });
+
+      // للاستشارة القانونية بس: نبعت السؤال فعليًا لـ legal_agent.py
+      // (عبر /api/consultation/chat) ونعرض الرد كرسالة شات حقيقية —
+      // بدل ما نعرض شاشة "بحث قانوني" الوهمية القديمة. chat.seed() بالفعل
+      // idempotent (مبنية عشان تتجاهل أي نداء تاني لو فيه رسايل موجودة
+      // بالفعل)، فمفيش خطورة تكرار حتى لو الدالة دي اتنادت أكتر من مرة.
+      if (artifactKind === 'consultation') {
+        chat.seed(initialPrompt);
+      }
     }
 
     setArtifactTransition(true);
@@ -230,7 +240,7 @@ export function Workspace() {
       setArtifactKey((k) => k + 1);
       setArtifactTransition(false);
     }, 300);
-  }, [thinkingKind, initialPrompt]);
+  }, [thinkingKind, initialPrompt, chat]);
 
   /* ── From Landing: router agent route ── */
   const handleRoute = useCallback((intent: TaskType, enrichedPrompt: string) => {
@@ -319,6 +329,7 @@ export function Workspace() {
       review: 'review',
       memo: 'memo',
       research: 'research',
+      consultation: 'consultation',
     };
     const kind = kindMap[session.screenId];
     if (!kind) return;
@@ -470,8 +481,9 @@ export function Workspace() {
       case 'memo':
         return <Memo initialPrompt={initialPrompt} memoData={memoData} jobId={memoJobId} embedded chatProps={sharedProps.chatProps} onSwitchTask={handleChatSwitchTask} initialChatMessages={memoInitialChatMessages} />;
       case 'research':
-      case 'consultation':
         return <Research initialPrompt={initialPrompt} embedded chatProps={sharedProps.chatProps} />;
+      case 'consultation':
+        return <Consultation initialPrompt={initialPrompt} embedded chatProps={sharedProps.chatProps} />;
       default:
         return null;
     }
