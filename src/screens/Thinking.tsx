@@ -188,6 +188,25 @@ export function Thinking({ task, prompt, onComplete, onError }: ThinkingProps) {
   const phaseRef = useRef(phase);
   phaseRef.current = phase;
 
+  // بتحمل الـ promise بتاع إنشاء الـ job (POST /api/memo/generate أو
+  // /api/contract/generate) — الـ ref بيفضل موجود حتى لو الـ effect تحت
+  // اتنادى مرتين (React StrictMode في الديف بيعمل mount→cleanup→mount
+  // قصدًا للتأكد إن الـ effects مش عندها side effects خطيرة). النداء
+  // الفعلي للشبكة بيحصل مرة واحدة بس (لو الـ ref لسه null)؛ كل استدعاء
+  // للـ effect (الأول اللي بيتلغي، والتاني اللي بيكمل) بيستنى نفس الـ
+  // promise، لكن بس النسخة اللي مكملة (مش اتعملها cleanup) هي اللي بتنادي
+  // onComplete فعليًا. ده اللي كان بيمنع تكرار الجلسة في الداتابيز/السايدبار.
+  const memoJobRef = useRef<Promise<{
+    job_id: string;
+    db_session_id: string | null;
+    result: MemoResult | null;
+  }> | null>(null);
+  const contractJobRef = useRef<Promise<{
+    job_id: string;
+    db_session_id: string | null;
+    result: ContractResult | null;
+  }> | null>(null);
+
   const schedule = useCallback((fn: () => void, ms: number) => {
     const t = setTimeout(fn, ms);
     timers.current.push(t);
@@ -256,7 +275,6 @@ export function Thinking({ task, prompt, onComplete, onError }: ThinkingProps) {
 
   /* ── Fire the job + start polling ── */
   useEffect(() => {
-    let abortController: AbortController | null = null;
     let done = false;
 
     // Only memo & contract use the backend job flow.
@@ -271,21 +289,25 @@ export function Thinking({ task, prompt, onComplete, onError }: ThinkingProps) {
       return () => clearTimers();
     }
 
-    // Memo: fire the job immediately, then poll.
+    // Memo: فير الـ job مرة واحدة بس (عبر memoJobRef)، بعدين استنى النتيجة.
     if (task === 'memo') {
-    (async () => {
-      try {
+    if (!memoJobRef.current) {
+      memoJobRef.current = (async () => {
         const req: GenerateMemoRequest = { raw_text: prompt };
         const { job_id, db_session_id } = await createMemoJob(req);
-        abortController = new AbortController();
         const result = await pollMemoJob(
           job_id,
           (p) => {
             if (p.progress !== undefined) setProgress(p.progress);
             if (p.stage) setStage(p.stage);
           },
-          { intervalMs: POLL_INTERVAL, signal: abortController.signal },
+          { intervalMs: POLL_INTERVAL },
         );
+        return { job_id, db_session_id, result: result.result ?? null };
+      })();
+    }
+    memoJobRef.current
+      .then(({ job_id, db_session_id, result }) => {
         if (done) return;
         done = true;
         setPhase('fading');
@@ -294,40 +316,42 @@ export function Thinking({ task, prompt, onComplete, onError }: ThinkingProps) {
         schedule(() => {
           if (!completedRef.current) {
             completedRef.current = true;
-            onComplete(result.result ?? { sections: [], case_metadata: {}, memo: '' }, job_id, db_session_id);
+            onComplete(result ?? { sections: [], case_metadata: {}, memo: '' }, job_id, db_session_id);
           }
         }, FADE_MS + 100 + READY_HOLD);
-      } catch (err) {
+      })
+      .catch((err) => {
         if (done) return;
-        if (err instanceof DOMException && err.name === 'AbortError') return;
         done = true;
         const msg = err instanceof Error ? err.message : 'حدث خطأ غير متوقع';
         setErrorMsg(msg);
         clearTimers();
         onError?.(msg);
-      }
-    })();
+      });
     startNextGroup();
     return () => {
       done = true;
-      abortController?.abort();
       clearTimers();
     };
     }
 
-    // Contract: fire the job, poll, then complete.
-    (async () => {
-      try {
+    // Contract: نفس منطق الـ memo بالظبط (فاير مرة واحدة عبر contractJobRef).
+    if (!contractJobRef.current) {
+      contractJobRef.current = (async () => {
         const { job_id, db_session_id } = await createContractJob(prompt);
-        abortController = new AbortController();
         const result = await pollContractJob(
           job_id,
           (p: ContractJobProgress) => {
             if (p.progress !== undefined) setProgress(p.progress);
             if (p.stage) setStage(p.stage);
           },
-          { intervalMs: POLL_INTERVAL, signal: abortController.signal },
+          { intervalMs: POLL_INTERVAL },
         );
+        return { job_id, db_session_id, result: result.result ?? null };
+      })();
+    }
+    contractJobRef.current
+      .then(({ job_id, db_session_id, result }) => {
         if (done) return;
         done = true;
         setPhase('fading');
@@ -336,24 +360,22 @@ export function Thinking({ task, prompt, onComplete, onError }: ThinkingProps) {
         schedule(() => {
           if (!completedRef.current) {
             completedRef.current = true;
-            onComplete(result.result ?? { contract_text: '', preamble: '', closing: '', clauses: [], contract_type_key: null, contract_type_ar: '', clause_validation: null, docx_path: null }, job_id, db_session_id);
+            onComplete(result ?? { contract_text: '', preamble: '', closing: '', clauses: [], contract_type_key: null, contract_type_ar: '', clause_validation: null, docx_path: null }, job_id, db_session_id);
           }
         }, FADE_MS + 100 + READY_HOLD);
-      } catch (err) {
+      })
+      .catch((err) => {
         if (done) return;
-        if (err instanceof DOMException && err.name === 'AbortError') return;
         done = true;
         const msg = err instanceof Error ? err.message : 'حدث خطأ غير متوقع';
         setErrorMsg(msg);
         clearTimers();
         onError?.(msg);
-      }
-    })();
+      });
     startNextGroup();
 
     return () => {
       done = true;
-      abortController?.abort();
       clearTimers();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

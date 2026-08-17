@@ -35,6 +35,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from memo import pipeline  # نفس ملف الـ pipeline من غير أي تعديل منطقي
+from consultation import legal_agent  # نفس منطق الاستشارة من غير أي تعديل
 from db import repo
 from db import client as db_client
 from auth import CurrentUser, get_current_user, try_get_current_user, require_session_access
@@ -689,6 +690,80 @@ async def router_endpoint(payload: RouterRequest):
     except Exception:
         history = "\n".join(m.text for m in payload.messages if m.role == "user")
         return RouterResponse(**_keyword_fallback_router(payload.current_text, history))
+
+
+# ── Legal Consultation ───────────────────────────────────────────────────────
+# Thin adapter حوالين legal_agent.answer_question() — صفر تعديل منطقي جوه
+# consultation/legal_agent.py. الـ engine نفسه مصمم من الأصل عشان يتنادى كده
+# (شوفي docstring بتاعت answer_question وConversationState.from_db_history).
+
+class ConsultationChatRequest(BaseModel):
+    message: str
+    session_id: Optional[str] = None
+
+
+class ConsultationChatResponse(BaseModel):
+    session_id: Optional[str] = None
+    reply: str
+    needs_clarification: bool
+    routing: Optional[dict] = None
+
+
+@app.post("/api/consultation/chat", response_model=ConsultationChatResponse)
+def consultation_chat(payload: ConsultationChatRequest, user: CurrentUser = Depends(get_current_user)):
+    """استشارة قانونية تفاعلية — نفس نمط /api/memo/chat لكن من غير job queue
+    (مفيش عملية طويلة محتاجة polling هنا، الرد بيرجع مباشرة من نفس الطلب).
+
+    الـ ConversationState بيتبني من جديد من chat_messages المحفوظة في
+    الداتابيز في كل نداء (مش من ذاكرة السيرفر) — بالظبط زي ما legal_agent.py
+    متوقع (ConversationState.from_db_history)، عشان يشتغل صح حتى لو
+    السيرفر عمل ريستارت بين رسالة وتانية."""
+    message = (payload.message or "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="message فاضي")
+
+    session_id = payload.session_id
+    db_history: list[dict] = []
+
+    if session_id:
+        require_session_access(session_id, user)
+        db_history = repo.get_chat_history(session_id)
+    else:
+        try:
+            session_row = repo.create_session(
+                user.firm_id, user.user_id, "consultation",
+                title=message[:60], prompt=message,
+            )
+            session_id = str(session_row["id"])
+        except Exception as e:
+            # زي memo/contract: لو حفظ الجلسة فشل، نكمّل من غير حفظ دائم
+            # بدل ما نمنع المستخدمة من الرد خالص
+            print(f"⚠️ فشل حفظ جلسة الاستشارة في الداتابيز (هتكمل من غير حفظ دائم): {e}")
+            session_id = None
+
+    state = legal_agent.ConversationState.from_db_history(db_history)
+
+    try:
+        result = legal_agent.answer_question(message, conversation_state=state)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"فشل الحصول على رد الاستشارة: {e}")
+
+    reply = result.get("answer", "")
+
+    if session_id:
+        try:
+            repo.append_chat_message(session_id, "user", message)
+            repo.append_chat_message(session_id, "assistant", reply)
+            repo.touch_session(session_id)
+        except Exception as e:
+            print(f"⚠️ فشل حفظ رسائل الاستشارة في الداتابيز: {e}")
+
+    return ConsultationChatResponse(
+        session_id=session_id,
+        reply=reply,
+        needs_clarification=bool(result.get("needs_clarification")),
+        routing=result.get("routing"),
+    )
 
 
 # ── Request/Response models ─────────────────────────────────────────────────
