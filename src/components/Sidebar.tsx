@@ -379,9 +379,9 @@ export function Sidebar({
             {!collapsed && (
               <div className="flex-1 min-w-0">
                 <div className="text-[0.82rem] font-600 text-ink truncate">{name}</div>
-                <div className="text-[0.66rem] text-sand-500 flex items-center gap-1">
+                {/* <div className="text-[0.66rem] text-sand-500 flex items-center gap-1">
                   <Sparkles className="w-3 h-3 text-gold-400" /> خطة المحترف
-                </div>
+                </div> */}
               </div>
             )}
           </div>

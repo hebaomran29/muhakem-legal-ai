@@ -11,7 +11,7 @@ import type { ScreenId } from './lib/types';
 import type { SessionCard } from './lib/sessionStore';
 
 export default function App() {
-  const { loading, user, needsFirm, signOut } = useAuth();
+  const { loading, user, signOut } = useAuth();
   const [overlayScreen, setOverlayScreen] = useState<ScreenId | null>(null);
 
   const handleNavigate = useCallback((s: ScreenId) => {
@@ -72,7 +72,7 @@ export default function App() {
     return <AuthLoadingScreen />;
   }
 
-  if (!user || needsFirm) {
+  if (!user) {
     return <Login />;
   }
 

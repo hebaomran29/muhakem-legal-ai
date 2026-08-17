@@ -6,7 +6,11 @@ import { AuthShell, MobileLogo, AuthCard, FormField } from './auth/AuthShared';
 import { Splash } from './auth/Splash';
 import { AuthFlow } from './auth/AuthFlow';
 
-function CreateFirmStep() {
+/* مش متستخدمة في الـ flow الحالي (شوفي Login() تحت) — متسابة موجودة
+   ومصدّرة (export) عشان تفضل جاهزة لو احتجناها كجزء من نظام دعوة/إدارة
+   مكتب مستقبلي، ومنقتش من الـ TypeScript build (noUnusedLocals) لأنها
+   مصدّرة. */
+export function CreateFirmStep() {
   const { createFirm } = useAuth();
   const [name, setName] = useState('');
   const [loading, setLoading] = useState(false);
@@ -107,7 +111,6 @@ function CreateFirmStep() {
    متصفح، بعدها welcome/login/signup أو خطوة المكتب.
    ════════════════════════════════════════════════ */
 export function Login() {
-  const { needsFirm } = useAuth();
   const [showSplash, setShowSplash] = useState(() => !sessionStorage.getItem('muhakem-splash-shown'));
 
   useEffect(() => {
@@ -115,6 +118,9 @@ export function Login() {
   }, [showSplash]);
 
   if (showSplash) return <Splash onDone={() => setShowSplash(false)} />;
-  if (needsFirm) return <CreateFirmStep />;
+  // ملحوظة: مساحة العمل الشخصية (personal firm) بقت بتتجهّز تلقائيًا
+  // وبصمت من auth.tsx بمجرد تسجيل الدخول — مفيش شاشة "إنشاء مكتب" في
+  // الـ flow تاني. CreateFirmStep لسه موجودة تحت (مش متحذوفة) لأنها ممكن
+  // تتستخدم مستقبلًا كجزء من نظام دعوة/إدارة مكتب من الإعدادات.
   return <AuthFlow />;
 }

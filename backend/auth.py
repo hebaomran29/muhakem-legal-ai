@@ -110,7 +110,10 @@ def try_get_current_user(authorization: str = Header(default="")) -> "CurrentUse
 
 
 def require_session_access(session_id: str, user: CurrentUser) -> None:
-    """يتأكد إن الجلسة دي فعلاً بتاعة مكتب المستخدم قبل ما نسمحله يقرا/يعدّل
-    فيها — دفاع إضافي حتى لو حد قدر يخمّن session_id بتاع مكتب تاني."""
-    if not repo.session_belongs_to_firm(session_id, user.firm_id):
+    """يتأكد إن الجلسة دي فعلاً بتاعة المستخدم الحالي (created_by) قبل ما
+    نسمحله يقرا/يعدّل/يمسح/يثبّت فيها — مش مجرد فلترة فرونت. الفحص بيتم
+    على مستويين مع بعض: firm_id (توافقي مع السكيما الحالية) AND created_by
+    (الملكية الحقيقية للمستخدم في الـ MVP الحالي). لو حد خمّن session_id
+    بتاعة مستخدمة تانية (حتى لو نفس الـ firm نظريًا)، الطلب هيترفض."""
+    if not repo.session_belongs_to_user(session_id, user.firm_id, user.user_id):
         raise HTTPException(status_code=404, detail="الجلسة دي مش موجودة")

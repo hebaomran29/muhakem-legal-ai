@@ -10,6 +10,7 @@ import { createContext, useContext, useEffect, useRef, useState, type ReactNode 
 import type { Session, User } from '@supabase/supabase-js';
 import { supabase } from './supabaseClient';
 import type { OnboardingProfile } from './authService';
+import { setSessionOwner } from './sessionStore';
 
 const BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '') || '';
 
@@ -101,6 +102,31 @@ async function fetchFirms(token: string): Promise<Firm[] | null> {
   }
 }
 
+/** بتنشئ "مساحة عمل شخصية" (personal firm) غير ظاهرة للمستخدمة — حل
+ *  توافقي مؤقت لحد ما firm_id يبطّل يبقى مطلوب في السكيما. بتتنادى مرة
+ *  واحدة بس (لما /api/me ترجّع firm_ids فاضية فعلاً)، مش على كل نداء.
+ *  بتستخدم /api/firms الموجودة أصلاً (نفس الـ endpoint اللي كانت
+ *  بتستخدمه شاشة "إنشاء المكتب" القديمة) — لو الباك إند رجّع 409
+ *  (عندها مكتب بالفعل، مثلاً من تبويب تاني اتسجل فيه في نفس اللحظة)
+ *  بنعتبرها نجاح عادي، مش خطأ. */
+async function ensurePersonalFirm(token: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${BASE_URL}/api/firms`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ name: '' }),
+    });
+    if (res.ok || res.status === 409) return true;
+    // eslint-disable-next-line no-console
+    console.error(`فشل تجهيز مساحة العمل الشخصية: /api/firms رجّع ${res.status}`);
+    return false;
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.error('فشل الاتصال بالسيرفر أثناء تجهيز مساحة العمل الشخصية:', e);
+    return false;
+  }
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [user, setUser] = useState<User | null>(null);
@@ -117,6 +143,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const applySession = async (session: Session | null) => {
+      // لازم يتنادى أول حاجة، من قبل أي await — عشان لو المستخدمة اتغيّرت
+      // (تسجيل دخول بحساب تاني، أو تسجيل خروج)، كاش الجلسات المحلي
+      // (localStorage) يتمسح فورًا قبل ما أي كومبوننت يقرا منه. متأخرهوش
+      // بعد أي نداء شبكة.
+      setSessionOwner(session?.user?.id ?? null);
+
       _accessToken = session?.access_token ?? null;
       setUser(session?.user ?? null);
       if (session?.user) await applyPendingOnboarding(session.user);
@@ -142,10 +174,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           // فعلاً معندهاش صلاحية
           setFirmsKnown(false);
           setFirms([{ id: 'unknown', name: '' }]);
+        } else if (f.length === 0) {
+          // معندهاش مساحة عمل لسه (أول مرة) — نجهّزها تلقائيًا وبصمت،
+          // من غير أي شاشة "إنشاء مكتب". لو فشل التجهيز (مشكلة شبكة
+          // مؤقتة مثلاً)، منوقفش المستخدمة عند شاشة تسجيل الدخول برضه —
+          // بنسيبها تدخل الـ workspace عادي؛ أي عملية فعلية محتاجة
+          // مساحة عمل (زي توليد مذكرة) هترجّع رسالة خطأ واضحة وقتها.
+          const provisioned = await ensurePersonalFirm(session.access_token);
+          setFirmsKnown(true);
+          if (provisioned) {
+            setFirms([{ id: 'provisioned', name: '' }]);
+            confirmedFirmRef.current = true;
+          } else {
+            setFirms([]);
+          }
         } else {
           setFirmsKnown(true);
           setFirms(f);
-          if (f.length > 0) confirmedFirmRef.current = true;
+          confirmedFirmRef.current = true;
         }
       } else {
         confirmedFirmRef.current = false;
@@ -176,6 +222,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const signOut = async () => {
+    // نمسح الكاش المحلي فورًا هنا كمان (مش بس نستنى onAuthStateChange)
+    // عشان مفيش أي لحظة ممكن يفضل فيها كاش المستخدمة القديمة ظاهر
+    setSessionOwner(null);
     await supabase.auth.signOut();
   };
 

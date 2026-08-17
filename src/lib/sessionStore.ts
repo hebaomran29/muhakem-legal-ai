@@ -37,6 +37,47 @@ export interface SessionCard {
 
 const STORAGE_KEY = 'muhakem_sessions';
 const PINNED_KEY = 'muhakem_pinned_sessions';
+const OWNER_KEY = 'muhakem_sessions_owner';
+
+/* ═══ عزل الكاش بين المستخدمين ═══
+   الكاش المحلي (localStorage) مكانه واحد بس في المتصفح، مش مقسّم حسب
+   الحساب. لو حساب A سجّل دخول وبعدين حساب B سجّل دخول على نفس المتصفح،
+   لازم نمسح كاش A فورًا قبل أي render لحساب B — مش نستنى مزامنة الداتابيز
+   (اللي بتحصل async وممكن تتأخر أو تفشل). setSessionOwner() بتتنادى من
+   auth.tsx في أول سطر من applySession، بالظبط لما نعرف مين المستخدمة
+   الحالية (أو إنها سجّلت خروج)، من قبل أي await — عشان نضمن إن مسح
+   الكاش بيحصل قبل ما أي كومبوننت يقرا الجلسات. */
+
+function _readOwner(): string | null {
+  try {
+    return localStorage.getItem(OWNER_KEY);
+  } catch {
+    return null;
+  }
+}
+
+/** تتنادى مع معرّف المستخدم الحالي (أو null لو مفيش حد مسجّل دخول).
+ *  لو المستخدم اتغيّر عن آخر مرة، بتمسح كل الكاش المحلي (جلسات + تثبيت)
+ *  فورًا وبشكل متزامن — عشان الحساب الجديد مايشوفش أي بيانات قديمة. */
+export function setSessionOwner(userId: string | null): void {
+  const prevOwner = _readOwner();
+  if (userId === prevOwner) return; // نفس المستخدم (أو نفس حالة "مفيش حد") — مفيش داعي نمسح
+
+  _sessions = [];
+  _pinned = new Set();
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(PINNED_KEY);
+    if (userId) {
+      localStorage.setItem(OWNER_KEY, userId);
+    } else {
+      localStorage.removeItem(OWNER_KEY);
+    }
+  } catch {
+    /* ignore */
+  }
+  _emit();
+}
 
 /* ═══ Module-level cache ═══ */
 

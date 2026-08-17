@@ -23,9 +23,15 @@ def touch_session(session_id: str, title: str | None = None) -> None:
     client.update("sessions", {"id": f"eq.{session_id}"}, patch)
 
 
-def list_sessions(firm_id: str) -> list[dict]:
+def list_sessions(firm_id: str, user_id: str) -> list[dict]:
+    """كل جلسات المستخدم الحالي بس (created_by) — firm_id لسه متبعت كـ
+    فلتر توافقي إضافي (compatibility layer)، لكن created_by هو مصدر
+    الـ ownership الحقيقي في الـ MVP الحالي (مستخدم واحد لكل firm شخصي).
+    لو حصل يومًا firm فيها أكتر من عضو (multi-member، خارج نطاق MVP
+    الحالي)، الفلترة دي هتفضل صح لأن كل مستخدمة هتشوف بس اللي هي عملتها."""
     return client.select("sessions", {
         "firm_id": f"eq.{firm_id}",
+        "created_by": f"eq.{user_id}",
         "order": "pinned.desc,updated_at.desc",
     })
 
@@ -34,8 +40,17 @@ def get_session(session_id: str) -> dict | None:
     return client.select("sessions", {"id": f"eq.{session_id}"}, single=True)
 
 
-def session_belongs_to_firm(session_id: str, firm_id: str) -> bool:
-    row = client.select("sessions", {"id": f"eq.{session_id}", "firm_id": f"eq.{firm_id}"}, single=True)
+def session_belongs_to_user(session_id: str, firm_id: str, user_id: str) -> bool:
+    """فحص الملكية الحقيقي لأي عملية على جلسة معيّنة (get/delete/pin/resume) —
+    query واحد بيتحقق من الاتنين مع بعض: الجلسة تابعة لـ firm المستخدم
+    (compatibility) AND اتعملت بمعرفة المستخدم نفسه (created_by، وده
+    الـ check الأساسي فعليًا في المرحلة دي). بديل session_belongs_to_firm
+    القديمة اللي كانت بتتحقق من firm_id بس."""
+    row = client.select("sessions", {
+        "id": f"eq.{session_id}",
+        "firm_id": f"eq.{firm_id}",
+        "created_by": f"eq.{user_id}",
+    }, single=True)
     return row is not None
 
 

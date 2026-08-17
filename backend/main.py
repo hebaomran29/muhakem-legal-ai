@@ -735,27 +735,26 @@ def health():
 
 
 @app.post("/api/memo/generate", response_model=JobResponse)
-def generate_memo(payload: GenerateMemoRequest, user: "CurrentUser | None" = Depends(try_get_current_user)):
+def generate_memo(payload: GenerateMemoRequest, user: CurrentUser = Depends(get_current_user)):
     """بيبدأ job (استرجاع → توليد → تحقق → تصحيح، من دقيقة لـ3 دقايق) ويرجع
     job_id على طول. اعملي polling على GET /api/memo/{job_id} لحد ما status
     يبقى completed — ده اللي بيغذي شاشة اللودينج.
 
-    لو المستخدم مسجّل دخول (user مش None) وفيه داتابيز متوصّلة، بتتعمل
-    session دائمة في الـ DB من الأول، والنتيجة بتتحفظ فيها لما التوليد يخلص
-    (شوفي _run_job) — يعني تقدري ترجعي للمذكرة دي بعدين من أي جهاز."""
+    تسجيل الدخول بقى إجباري هنا (مش try_get_current_user زي الأول) —
+    كل مذكرة لازم تتربط بمستخدمة محددة من الأول عشان الـ session تتحفظ
+    وتتفلتر صح بعدين (created_by)."""
     if not payload.raw_text or not payload.raw_text.strip():
         raise HTTPException(status_code=400, detail="raw_text فاضي")
 
     db_session_id = None
-    if user:
-        try:
-            session_row = repo.create_session(
-                user.firm_id, user.user_id, "memo",
-                title=payload.raw_text.strip()[:60], prompt=payload.raw_text,
-            )
-            db_session_id = str(session_row["id"])
-        except Exception as e:
-            print(f"⚠️ فشل حفظ الجلسة في الداتابيز (هتكمل من غير حفظ دائم): {e}")
+    try:
+        session_row = repo.create_session(
+            user.firm_id, user.user_id, "memo",
+            title=payload.raw_text.strip()[:60], prompt=payload.raw_text,
+        )
+        db_session_id = str(session_row["id"])
+    except Exception as e:
+        print(f"⚠️ فشل حفظ الجلسة في الداتابيز (هتكمل من غير حفظ دائم): {e}")
 
     job_id = str(uuid.uuid4())
     with _jobs_lock:
@@ -1352,21 +1351,23 @@ class ContractChatEditRequest(BaseModel):
 # ── Contract Endpoints ──────────────────────────────────────────────────────
 
 @app.post("/api/contract/generate", response_model=JobResponse)
-def generate_contract_endpoint(payload: GenerateContractRequest, user: "CurrentUser | None" = Depends(try_get_current_user)):
-    """يبدأ توليد عقد ويرجع job_id — الفرونت يعمل polling."""
+def generate_contract_endpoint(payload: GenerateContractRequest, user: CurrentUser = Depends(get_current_user)):
+    """يبدأ توليد عقد ويرجع job_id — الفرونت يعمل polling.
+
+    تسجيل الدخول إجباري هنا برضه (زي /api/memo/generate) لنفس السبب:
+    الملكية (created_by) لازم تتحدد من أول لحظة."""
     if not payload.query or not payload.query.strip():
         raise HTTPException(status_code=400, detail="query فاضي")
 
     db_session_id = None
-    if user:
-        try:
-            session_row = repo.create_session(
-                user.firm_id, user.user_id, "contract",
-                title=payload.query.strip()[:60], prompt=payload.query,
-            )
-            db_session_id = str(session_row["id"])
-        except Exception as e:
-            print(f"⚠️ فشل حفظ الجلسة في الداتابيز (هتكمل من غير حفظ دائم): {e}")
+    try:
+        session_row = repo.create_session(
+            user.firm_id, user.user_id, "contract",
+            title=payload.query.strip()[:60], prompt=payload.query,
+        )
+        db_session_id = str(session_row["id"])
+    except Exception as e:
+        print(f"⚠️ فشل حفظ الجلسة في الداتابيز (هتكمل من غير حفظ دائم): {e}")
 
     job_id = str(uuid.uuid4())
     with _contract_jobs_lock:
@@ -1490,8 +1491,20 @@ class CreateFirmRequest(BaseModel):
 def create_firm(payload: CreateFirmRequest, user: CurrentUser = Depends(get_current_user)):
     """أول مرة يسجّل فيها المستخدم دخول ومعندوش مكتب — بينشئله مكتب جديد
     وهو الـ owner بتاعه. لو عنده مكتب بالفعل، استخدمي /api/firms/invite
-    بدل ما تعملي واحد جديد."""
+    بدل ما تعملي واحد جديد.
+
+    من مرحلة Phase 1: الـ endpoint ده بقى مستخدم كمان تلقائيًا من الفرونت
+    (auth.tsx) عشان يوفّر "مساحة عمل شخصية" (personal firm) غير ظاهرة
+    للمستخدمة بمجرد ما تسجّل — دي حل توافقي مؤقت (compatibility) لحد ما
+    نلغي firm_id كـ NOT NULL FK في السكيما مستقبلًا، مش Firm حقيقية
+    بمعنى multi-member. بنعيد التحقق من firm_ids هنا (مش بس عند فك
+    التوكن) عشان نقلل نافذة الـ race لو حصلت نداءات متوازية من نفس
+    المستخدمة (مش ضمان كامل من غير unique constraint في الداتابيز، لكنه
+    كافي لسيناريوهات الاستخدام العادية)."""
     if user.firm_ids:
+        raise HTTPException(status_code=409, detail="المستخدم عضو في مكتب بالفعل")
+    fresh_firm_ids = repo.get_user_firm_ids(user.user_id)
+    if fresh_firm_ids:
         raise HTTPException(status_code=409, detail="المستخدم عضو في مكتب بالفعل")
     firm = repo.create_firm_with_owner(payload.name.strip() or "مكتبي", user.user_id)
     return firm
@@ -1535,9 +1548,11 @@ def get_me(user: "CurrentUser | None" = Depends(try_get_current_user)):
 
 @app.get("/api/sessions")
 def list_sessions_endpoint(user: CurrentUser = Depends(get_current_user)):
-    """كل جلسات مكتب المستخدم (مذكرات وعقود واستشارات...) — بتغذي الـ Sidebar
-    بدل localStorage."""
-    return {"sessions": repo.list_sessions(user.firm_id)}
+    """جلسات المستخدم الحالي بس (مذكرات وعقود واستشارات...) — بتغذي الـ
+    Sidebar بدل localStorage. مفلترة على created_by مش firm_id بس، عشان
+    لو حصل يومًا أكتر من مستخدمة في نفس الـ firm الشخصي (مش متوقع في
+    الـ MVP الحالي)، كل واحدة تشوف بس جلساتها هي."""
+    return {"sessions": repo.list_sessions(user.firm_id, user.user_id)}
 
 
 @app.get("/api/sessions/{session_id}")
