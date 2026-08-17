@@ -579,11 +579,39 @@ ROUTER_SYSTEM_PROMPT = """أنت المساعد الذكي في نظام "مُح
 1. فهم ما يريد المستخدم من رسالته الحالية + سياق المحادثة السابقة
 2. تصنيف النية (intent) إلى أحد الأنواع:
    - memo: إعداد مذكرة دفاع / لائحة دفاع / مرافعة
-   - contract: صياغة عقد / إنشاء اتفاقية
+   - contract: صياغة عقد / إنشاء اتفاقية (فقط إذا طلب المستخدم إنشاء أو كتابة عقد)
    - review: مراجعة عقد / فحص عقد / تحليل مخاطر
-   - research: بحث قانوني / مواد / أحكام
-   - consultation: استشارة قانونية / سؤال عام (الافتراضي)
+   - research: بحث قانوني متخصص / مواد / أحكام
+   - consultation: استشارة قانونية / سؤال عن حكم / سؤال عام (الافتراضي)
 3. الرد بالمحتوى المناسب
+
+⭐ القاعدة الأهم — الفرق بين السؤال عن العقد وإنشاء العقد:
+- إذا كان المستخدم **يسأل** عن حكم أو شروط أو آثار أو أحكام متعلقة بعقد → intent = "consultation" (استشارة)
+- إذا كان المستخدم **يطلب إنشاء أو صياغة أو كتابة** عقد → intent = "contract"
+- المعيار هو **نيّة المستخدم (فعل vs. سؤال)** وليس مجرد ذكر كلمة "عقد" أو "اتفاقية"
+
+أمثلة على consultation (سؤال عن عقد، وليس إنشاؤه):
+- "ما هي شروط فسخ العقد في القانون المدني المصري؟" → consultation
+- "هل يجوز فسخ العقد؟" → consultation
+- "ما حكم الشرط الجزائي في العقد؟" → consultation
+- "ما هي آثار فسخ العقد؟" → consultation
+- "متى يبطل العقد؟" → consultation
+- "ما حقوقي لو فسخ العقد؟" → consultation
+
+أمثلة على contract (إنشاء عقد):
+- "اكتب لي عقد إيجار" → contract
+- "أنشئ عقد عمل" → contract
+- "صِغ لي عقد شراكة" → contract
+- "اكتب عقد بيع" → contract
+- "أريد صياغة اتفاقية" → contract
+
+أمثلة على review (مراجعة عقد موجود):
+- "راجع هذا العقد" → review
+- "فحص عقد الإيجار ده" → review
+
+أمثلة على consultation (سؤال عام قانوني):
+- "ما هو الفرق بين البيع والإيجار؟" → consultation
+- "هل يجوز الطرد بدون إنذار؟" → consultation
 
 قواعد مهمة:
 - لو المستخدم وصف وقائع قضية (متهم، تهمة، قبض، إلخ) من غير ما يطلب إجراء محدد:
@@ -621,24 +649,101 @@ class RouterResponse(BaseModel):
     enriched_prompt: str
 
 
+# كلمات مفتاحية حسب **نوع الإجراء** — مش حسب الموضوع.
+# "عقد" و"اتفاقية" و"بنود" مش here عشان هي كلمات موضوعية:
+# المستخدم ممكن يسأل عن العقد (consultation) أو يطلب إنشاءه (contract).
+# الـ fallback بيتعامل مع الحالة دي عن طريق فحص نمط الجملة (سؤال vs. أمر).
 _ROUTER_KEYWORDS: dict[str, list[str]] = {
     "memo": ["مذكرة", "دفاع", "مرافعة", "لائحة"],
-    "contract": ["عقد", "صياغة", "اتفاقية", "بنود", "عقود"],
-    "review": ["مراجعة", "راجع", "فحص", "تدقيق", "تحليل"],
-    "research": ["بحث", "مقال", "مادة", "قانون", "حكم", "سابقة"],
+    "contract": ["اكتب لي عقد", "أنشئ عقد", "صياغة عقد", "صِغ لي عقد",
+                "اكتب عقد", "أريد عقد", "ابني عقد", "جهّز عقد",
+                "اعداد عقد", "إعداد عقد", "تحرير عقد"],
+    "review": ["راجع", "فحص", "تدقيق", "مراجعة"],
+    "research": ["بحث قانوني", "مقال قانوني", "سابقة قضائية"],
 }
 
 
-def _keyword_fallback_router(text: str, history_text: str) -> dict:
-    """Fallback keyword-based routing when LLM is unavailable."""
+# أنماط الاستفهام العربية — لو النص يبدأ بأي من دول أو يحتويها كنمط سؤال،
+# فهو **سؤال** (consultation) حتى لو فيه كلمات مثل "عقد" أو "اتفاقية".
+_QUESTION_PREFIXES = [
+    "ما هي", "ما هو", "ما هى", "ما هو", "ما هى",
+    "ما حكم", "ما حقوق", "ما هي حقوق", "ما هي شروط",
+    "هل", "هل يجوز", "هل يحق", "هل يمكن",
+    "متى", "متى ي", "متى يجوز", "متى يبطل",
+    "لماذا", "كيف", "كيف يمكن", "كيف يتم",
+    "ما الفرق", "ما الفرق بين",
+    "ما المادة", "ما هي المادة",
+    "ما آثار", "ما هي آثار",
+    "هل يجوز فسخ", "شروط فسخ", "آثار فسخ", "أحكام فسخ",
+]
+
+# أفعال الطلب/الإنشاء — لو النص فيه أي من دول، المستخدم يريد **إنشاء شيء**.
+_ACTION_VERBS = [
+    "اكتب", "اكتب لي", "أنشئ", "أنشئ لي", "صِغ", "صيغ لي",
+    "أريد صياغة", "أريد عقد", "ابني", "جهّز", "حرر",
+    "اعداد", "إعداد", "تحرير",
+]
+
+
+def _is_question_pattern(text: str) -> bool:
+    """يحسب إذا النص سؤال (استشارة) وليس أمر (إنشاء).
+    بيتحقق من: علامات استفهام، بدايات أسئلة عربية، أو نمط سؤال."""
+    # علامة استفهام صريحة
+    if "؟" in text or "?" in text:
+        return True
+    lower = text.strip()
+    # بدايات أسئلة عربية شائعة
+    for prefix in _QUESTION_PREFIXES:
+        if lower.startswith(prefix) or prefix in lower:
+            return True
+    return False
+
+
+def _has_creation_verb(text: str) -> bool:
+    """يحسب إذا النص فيه فعل إنشاء/صياغة واضح."""
     lower = text.lower()
-    best_intent = "consultation"
-    best_score = 0
-    for intent_type, kws in _ROUTER_KEYWORDS.items():
-        score = sum(1 for kw in kws if kw in lower)
-        if score > best_score:
-            best_score = score
-            best_intent = intent_type
+    return any(verb in lower for verb in _ACTION_VERBS)
+
+
+def _keyword_fallback_router(text: str, history_text: str) -> dict:
+    """Fallback keyword-based routing when LLM is unavailable.
+
+    التحسين الأساسي: التمييز بين "سؤال عن عقد" (consultation) و
+    "طلب إنشاء عقد" (contract) بناءً على نمط الجملة، وليس مجرد
+    وجود كلمة "عقد".
+    """
+    lower = text.lower()
+    is_question = _is_question_pattern(text)
+    has_creation = _has_creation_verb(text)
+
+    # خطوة 1: لو فيه فعل إنشاء/صياغة واضح، حدد الهدف حسب الكلمات المرفقة
+    if has_creation:
+        # لو الكلمات المفتاحية بتشير لمذكرة → memo (مش contract)
+        if any(kw in lower for kw in _ROUTER_KEYWORDS.get("memo", [])):
+            best_intent = "memo"
+            best_score = 1
+        # لو فيه كلمات مراجعة → review
+        elif any(kw in lower for kw in _ROUTER_KEYWORDS.get("review", [])):
+            best_intent = "review"
+            best_score = 1
+        else:
+            best_intent = "contract"
+            best_score = 1
+    else:
+        # خطوة 2: تسجيل keyword scores عادي
+        best_intent = "consultation"
+        best_score = 0
+        for intent_type, kws in _ROUTER_KEYWORDS.items():
+            score = sum(1 for kw in kws if kw in lower)
+            if score > best_score:
+                best_score = score
+                best_intent = intent_type
+
+    # خطوة 3: override — لو النص سؤال والتصنيف الحالي هو contract أو review
+    # من غير ما يكون فيه فعل إنشاء واضح، خلّيه consultation
+    if is_question and not has_creation and best_intent in ("contract", "review"):
+        best_intent = "consultation"
+        best_score = 0
 
     has_action = best_intent != "consultation"
     is_ref = any(w in lower for w in [
