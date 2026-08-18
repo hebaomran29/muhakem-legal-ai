@@ -58,6 +58,36 @@ app.add_middleware(
 )
 
 
+# ── Consultation model warm-up (main.py only — صفر تعديل في legal_agent.py) ──
+# _ensure_pipeline() جوه legal_agent.py مش thread-safe (بتعدّل global dicts
+# زي _bm25_by_law/_chunks_by_law من غير lock)، فلو warm-up thread وطلب
+# استشارة حقيقي نادوا عليها في نفس اللحظة، ممكن يحصل تحميل مكرر أو تعارض في
+# الحالة العالمية. الحل: lock واحد هنا في main.py بس، بيتشارك فيه warm-up
+# والطلبات الحقيقية، وبما إن _ensure_pipeline() نفسها idempotent (بترجع فوراً
+# لو _consultation_ready=True)، فأي نداء تاني بعد أول تحميل بيبقى شبه مجاني.
+_consultation_warmup_lock = threading.Lock()
+
+
+def _warm_up_consultation_models():
+    """بتتنفذ في background thread وقت الـ startup. بتنادي على
+    legal_agent._ensure_pipeline() الموجودة بالظبط — من غير أي تكرار لمنطق
+    التحميل. لو فشلت (شبكة/مفتاح ناقص)، السيرفر يفضل شغال والـ lazy load
+    القديم هيشتغل عادي أول ما يجيلها طلب استشارة حقيقي."""
+    try:
+        with _consultation_warmup_lock:
+            legal_agent._ensure_pipeline()
+        print("✅ Consultation models warm-up خلص بنجاح (embedder + reranker + BM25).")
+    except Exception as e:
+        print(f"⚠️ Consultation warm-up فشل ({e}) — هيتحمّل lazy عادي أول طلب استشارة حقيقي.")
+
+
+@app.on_event("startup")
+def _start_consultation_warmup():
+    # daemon=True عشان الـ thread ده ميمنعش السيرفر من الإغلاق العادي، وما
+    # بيبلوكش startup الـ FastAPI/Uvicorn — الـ app بيبدأ يستقبل طلبات فوراً.
+    threading.Thread(target=_warm_up_consultation_models, daemon=True, name="consultation-warmup").start()
+
+
 # ── تعريف الأقسام الخمسة الحقيقية (بترتيب ظهورها في القالب) ─────────────────
 SECTION_ANCHORS = [
     ("waqai", "أولاً: وقائع الدعوى", r"(?:أولاً|أولا)[:\s]*وقائع\s+الدعوى"),
@@ -849,6 +879,12 @@ def consultation_chat(payload: ConsultationChatRequest, user: CurrentUser = Depe
     state = legal_agent.ConversationState.from_db_history(db_history)
 
     try:
+        # لو warm-up لسه شغال في الخلفية، الطلب ده بينتظر نفس الـ lock بدل ما
+        # يعمل تحميل موديلات تاني بالتوازي (_ensure_pipeline مش thread-safe).
+        # لو warm-up خلص بالفعل، النداء ده هيرجع فوراً (idempotent) وميضيفش
+        # أي تأخير حقيقي.
+        with _consultation_warmup_lock:
+            legal_agent._ensure_pipeline()
         result = legal_agent.answer_question(message, conversation_state=state)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"فشل الحصول على رد الاستشارة: {e}")
