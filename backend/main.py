@@ -32,13 +32,27 @@ from typing import Optional
 from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
 
 from memo import pipeline  # نفس ملف الـ pipeline من غير أي تعديل منطقي
 from consultation import legal_agent  # نفس منطق الاستشارة من غير أي تعديل
 from db import repo
-from db import client as db_client
-from auth import CurrentUser, get_current_user, try_get_current_user, require_session_access
+from auth import CurrentUser, get_current_user, require_session_access
+from routers.firms_sessions import firms_sessions_router
+from schemas import (
+    ChatEditRequest,
+    ConsultationChatRequest,
+    ConsultationChatResponse,
+    ContractChatEditRequest,
+    GenerateContractRequest,
+    GenerateMemoRequest,
+    JobResponse,
+    JobStatusResponse,
+    ResumeResponse,
+    RouterMessage,
+    RouterRequest,
+    RouterResponse,
+    SaveSectionsRequest,
+)
 
 # ── استيراد pipeline العقود ──────────────────────────────────────────────────
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "contracts"))
@@ -56,6 +70,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(firms_sessions_router)
 
 
 # ── Consultation model warm-up (main.py only — صفر تعديل في legal_agent.py) ──
@@ -661,24 +677,6 @@ ROUTER_SYSTEM_PROMPT = """أنت المساعد الذكي في نظام "مُح
 {"intent":"...","should_route":true/false,"is_reference":true/false,"response":"...","enriched_prompt":"..."}"""
 
 
-class RouterMessage(BaseModel):
-    role: str
-    text: str
-
-
-class RouterRequest(BaseModel):
-    messages: list[RouterMessage]
-    current_text: str
-
-
-class RouterResponse(BaseModel):
-    intent: str
-    should_route: bool
-    is_reference: bool
-    response: str
-    enriched_prompt: str
-
-
 # كلمات مفتاحية حسب **نوع الإجراء** — مش حسب الموضوع.
 # "عقد" و"اتفاقية" و"بنود" مش here عشان هي كلمات موضوعية:
 # المستخدم ممكن يسأل عن العقد (consultation) أو يطلب إنشاءه (contract).
@@ -832,18 +830,6 @@ async def router_endpoint(payload: RouterRequest):
 # consultation/legal_agent.py. الـ engine نفسه مصمم من الأصل عشان يتنادى كده
 # (شوفي docstring بتاعت answer_question وConversationState.from_db_history).
 
-class ConsultationChatRequest(BaseModel):
-    message: str
-    session_id: Optional[str] = None
-
-
-class ConsultationChatResponse(BaseModel):
-    session_id: Optional[str] = None
-    reply: str
-    needs_clarification: bool
-    routing: Optional[dict] = None
-
-
 @app.post("/api/consultation/chat", response_model=ConsultationChatResponse)
 def consultation_chat(payload: ConsultationChatRequest, user: CurrentUser = Depends(get_current_user)):
     """استشارة قانونية تفاعلية — نفس نمط /api/memo/chat لكن من غير job queue
@@ -908,38 +894,6 @@ def consultation_chat(payload: ConsultationChatRequest, user: CurrentUser = Depe
 
 
 # ── Request/Response models ─────────────────────────────────────────────────
-class GenerateMemoRequest(BaseModel):
-    raw_text: str          # كلام المحامية الحر بالكامل — نفس USER_RAW_INPUT
-    court: Optional[str] = None
-    case_number: Optional[str] = None
-    lawyer_name: Optional[str] = None
-    lawyer_license: Optional[str] = None
-
-
-class JobResponse(BaseModel):
-    job_id: str
-    status: str
-    db_session_id: Optional[str] = None
-
-
-class JobStatusResponse(BaseModel):
-    job_id: str
-    status: str
-    progress: float
-    stage: Optional[str] = None
-    result: Optional[dict] = None
-    error: Optional[str] = None
-
-
-class SaveSectionsRequest(BaseModel):
-    sections: list[dict]   # [{id, title, body}, ...] — نفس شكل اللي رجع من generate
-
-
-class ChatEditRequest(BaseModel):
-    job_id: str
-    message: str
-
-
 # ── Endpoints ────────────────────────────────────────────────────────────────
 @app.get("/api/health")
 def health():
@@ -1076,13 +1030,6 @@ def chat_edit(payload: ChatEditRequest):
             print(f"⚠️ فشل حفظ رسائل الشات في الداتابيز: {e}")
 
     return response
-
-
-class ResumeResponse(BaseModel):
-    job_id: str
-    status: str
-    db_session_id: Optional[str] = None
-    chat_history: list[dict] = []
 
 
 @app.post("/api/memo/{session_id}/resume", response_model=ResumeResponse)
@@ -1555,15 +1502,6 @@ def _handle_contract_chat_edit(job: dict, message: str) -> dict:
 
 # ── Contract Request/Response Models ────────────────────────────────────────
 
-class GenerateContractRequest(BaseModel):
-    query: str
-
-
-class ContractChatEditRequest(BaseModel):
-    job_id: str
-    message: str
-
-
 # ── Contract Endpoints ──────────────────────────────────────────────────────
 
 @app.post("/api/contract/generate", response_model=JobResponse)
@@ -1692,120 +1630,3 @@ def download_contract_docx(job_id: str):
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         filename=filename,
     )
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# ── Firms & Sessions (الداتابيز الدائمة) ────────────────────────────────
-# مطلوب Authorization: Bearer <supabase_access_token> على كل الـ endpoints دي
-# ═══════════════════════════════════════════════════════════════════════════
-
-class CreateFirmRequest(BaseModel):
-    name: str
-
-
-@app.post("/api/firms")
-def create_firm(payload: CreateFirmRequest, user: CurrentUser = Depends(get_current_user)):
-    """أول مرة يسجّل فيها المستخدم دخول ومعندوش مكتب — بينشئله مكتب جديد
-    وهو الـ owner بتاعه. لو عنده مكتب بالفعل، استخدمي /api/firms/invite
-    بدل ما تعملي واحد جديد.
-
-    من مرحلة Phase 1: الـ endpoint ده بقى مستخدم كمان تلقائيًا من الفرونت
-    (auth.tsx) عشان يوفّر "مساحة عمل شخصية" (personal firm) غير ظاهرة
-    للمستخدمة بمجرد ما تسجّل — دي حل توافقي مؤقت (compatibility) لحد ما
-    نلغي firm_id كـ NOT NULL FK في السكيما مستقبلًا، مش Firm حقيقية
-    بمعنى multi-member. بنعيد التحقق من firm_ids هنا (مش بس عند فك
-    التوكن) عشان نقلل نافذة الـ race لو حصلت نداءات متوازية من نفس
-    المستخدمة (مش ضمان كامل من غير unique constraint في الداتابيز، لكنه
-    كافي لسيناريوهات الاستخدام العادية)."""
-    if user.firm_ids:
-        raise HTTPException(status_code=409, detail="المستخدم عضو في مكتب بالفعل")
-    fresh_firm_ids = repo.get_user_firm_ids(user.user_id)
-    if fresh_firm_ids:
-        raise HTTPException(status_code=409, detail="المستخدم عضو في مكتب بالفعل")
-    firm = repo.create_firm_with_owner(payload.name.strip() or "مكتبي", user.user_id)
-    return firm
-
-
-class InviteMemberRequest(BaseModel):
-    email: str
-
-
-@app.post("/api/firms/invite")
-def invite_member(payload: InviteMemberRequest, user: CurrentUser = Depends(get_current_user)):
-    """بتضيف محامية تانية (لازم تكون عملت حساب على Supabase Auth بالفعل
-    بنفس الإيميل ده) لنفس مكتب المستخدم الحالي."""
-    found_user = db_client.auth_admin_get_user_by_email(payload.email.strip().lower())
-    if not found_user:
-        raise HTTPException(status_code=404, detail="مفيش حساب مسجّل بالإيميل ده")
-    repo.add_member_to_firm(user.firm_id, found_user["id"])
-    return {"success": True}
-
-
-class MeResponse(BaseModel):
-    user_id: str
-    email: Optional[str] = None
-    firm_ids: list[str] = []
-
-
-@app.get("/api/me", response_model=MeResponse)
-def get_me(user: "CurrentUser | None" = Depends(try_get_current_user)):
-    """المصدر الوحيد والموثوق لمعرفة هل المستخدمة عندها مكتب ولا لأ.
-    مقصود إنه يكون مستقل عن أي endpoint تاني (زي /api/sessions اللي
-    كانت الطريقة القديمة بتخمّن الحالة من status code بتاعه، وده كان
-    بيدّي false positive لـ"معندهاش مكتب" مع أي خطأ عابر). بيرجّع 401
-    لو مفيش توكن أصلاً، لكن معندهوش أي حالة "خطأ" تانية — لو المستخدمة
-    مسجّلة دخول بس معندهاش مكتب لسه، firm_ids بترجع [] عادي من غير أي
-    exception (try_get_current_user و.firm_ids مش .firm_id، فمفيش
-    الـ 403 اللي بيطلع من الـ property لو حد نادى عليه)."""
-    if user is None:
-        raise HTTPException(status_code=401, detail="مفيش توكن مصادقة — سجّلي دخول")
-    return MeResponse(user_id=user.user_id, email=user.email, firm_ids=user.firm_ids)
-
-
-@app.get("/api/sessions")
-def list_sessions_endpoint(user: CurrentUser = Depends(get_current_user)):
-    """جلسات المستخدم الحالي بس (مذكرات وعقود واستشارات...) — بتغذي الـ
-    Sidebar بدل localStorage. مفلترة على created_by مش firm_id بس، عشان
-    لو حصل يومًا أكتر من مستخدمة في نفس الـ firm الشخصي (مش متوقع في
-    الـ MVP الحالي)، كل واحدة تشوف بس جلساتها هي."""
-    return {"sessions": repo.list_sessions(user.firm_id, user.user_id)}
-
-
-@app.get("/api/sessions/{session_id}")
-def get_session_endpoint(session_id: str, user: CurrentUser = Depends(get_current_user)):
-    """تفاصيل جلسة واحدة كاملة: بياناتها + النتيجة (مذكرة أو عقد) + كل
-    تاريخ الشات — عشان تقدري تفتحيها وتكمّلي التعديل عليها بالشات."""
-    require_session_access(session_id, user)
-    session = repo.get_session(session_id)
-    if session is None:
-        raise HTTPException(status_code=404, detail="الجلسة دي مش موجودة")
-
-    result = None
-    if session["type"] == "memo":
-        result = repo.get_memo_result(session_id)
-    elif session["type"] == "contract":
-        result = repo.get_contract_result(session_id)
-
-    return {
-        "session": session,
-        "result": result,
-        "chat_history": repo.get_chat_history(session_id),
-    }
-
-
-@app.delete("/api/sessions/{session_id}")
-def delete_session_endpoint(session_id: str, user: CurrentUser = Depends(get_current_user)):
-    require_session_access(session_id, user)
-    repo.delete_session(session_id)
-    return {"success": True}
-
-
-class PinSessionRequest(BaseModel):
-    pinned: bool
-
-
-@app.post("/api/sessions/{session_id}/pin")
-def pin_session_endpoint(session_id: str, payload: PinSessionRequest, user: CurrentUser = Depends(get_current_user)):
-    require_session_access(session_id, user)
-    repo.set_pinned(session_id, payload.pinned)
-    return {"success": True}
