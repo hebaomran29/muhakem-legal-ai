@@ -66,6 +66,17 @@ alter table contract_results add column if not exists contract_type_key text;
 alter table contract_results add column if not exists clause_validation jsonb;
 alter table contract_results add column if not exists pending_clauses jsonb;
 
+-- ── نتيجة مراجعة العقد وOCR ─────────────────────────────────────
+create table if not exists review_results (
+  session_id         uuid primary key references sessions(id) on delete cascade,
+  filename           text not null,
+  content_type       text not null,
+  extraction_method  text not null,
+  source_text        text not null,
+  result             jsonb not null,
+  updated_at         timestamptz not null default now()
+);
+
 -- ── سجل شات التعديل لكل جلسة ───────────────────────────────────
 create table if not exists chat_messages (
   id           uuid primary key default gen_random_uuid(),
@@ -89,6 +100,7 @@ alter table firm_members enable row level security;
 alter table sessions enable row level security;
 alter table memo_results enable row level security;
 alter table contract_results enable row level security;
+alter table review_results enable row level security;
 alter table chat_messages enable row level security;
 
 create policy "members can view their firm" on firms
@@ -123,6 +135,25 @@ create policy "members can access their firm's contract results" on contract_res
       )
     )
   );
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_policies
+    where schemaname = 'public'
+      and tablename = 'review_results'
+      and policyname = 'members can access their firm review results'
+  ) then
+    create policy "members can access their firm review results" on review_results
+      for all using (
+        session_id in (
+          select id from sessions where firm_id in (
+            select firm_id from firm_members where user_id = auth.uid()
+          )
+        )
+      );
+  end if;
+end $$;
 
 create policy "members can access their firm's chat messages" on chat_messages
   for all using (
