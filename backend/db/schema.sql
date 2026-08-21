@@ -103,21 +103,25 @@ alter table contract_results enable row level security;
 alter table review_results enable row level security;
 alter table chat_messages enable row level security;
 
+drop policy if exists "members can view their firm" on firms;
 create policy "members can view their firm" on firms
   for select using (
     id in (select firm_id from firm_members where user_id = auth.uid())
   );
 
+drop policy if exists "members can view their firm's membership" on firm_members;
 create policy "members can view their firm's membership" on firm_members
   for select using (
     firm_id in (select firm_id from firm_members where user_id = auth.uid())
   );
 
+drop policy if exists "members can access their firm's sessions" on sessions;
 create policy "members can access their firm's sessions" on sessions
   for all using (
     firm_id in (select firm_id from firm_members where user_id = auth.uid())
   );
 
+drop policy if exists "members can access their firm's memo results" on memo_results;
 create policy "members can access their firm's memo results" on memo_results
   for all using (
     session_id in (
@@ -127,6 +131,7 @@ create policy "members can access their firm's memo results" on memo_results
     )
   );
 
+drop policy if exists "members can access their firm's contract results" on contract_results;
 create policy "members can access their firm's contract results" on contract_results
   for all using (
     session_id in (
@@ -155,6 +160,7 @@ begin
   end if;
 end $$;
 
+drop policy if exists "members can access their firm's chat messages" on chat_messages;
 create policy "members can access their firm's chat messages" on chat_messages
   for all using (
     session_id in (
