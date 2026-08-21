@@ -25,7 +25,9 @@ QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY", "")
 LLM_MODEL = os.environ.get("LLM_MODEL", "qwen3:14b")
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1")
 LLM_NUM_CTX = int(os.environ.get("LLM_NUM_CTX", "4096"))
-MEMO_MAX_CORRECTION_ROUNDS = int(os.environ.get("MEMO_MAX_CORRECTION_ROUNDS", "1"))
+# التصحيح الكامل يعيد توليد المذكرة وقد يضاعف وقت Qwen 14B.
+# الافتراضي السريع 0، ويمكن تفعيله عند الحاجة عبر .env بقيمة 1.
+MEMO_MAX_CORRECTION_ROUNDS = int(os.environ.get("MEMO_MAX_CORRECTION_ROUNDS", "0"))
 LLM_TIMING_LOG = os.environ.get("LLM_TIMING_LOG", "true").lower() in {"1", "true", "yes"}
 MUFFAKIR_MODEL = "mohamed2811/Muffakir_Embedding_V2"
 
@@ -1688,6 +1690,7 @@ def draft_defense_memo(
     استخراج الاسم من case_facts تلقائياً."""
     if max_correction_rounds is None:
         max_correction_rounds = MEMO_MAX_CORRECTION_ROUNDS
+    max_correction_rounds = max(0, int(max_correction_rounds))
 
     if verbose:
         print("📚 [1/5] جاري الاسترجاع الذكي من Qdrant...")
