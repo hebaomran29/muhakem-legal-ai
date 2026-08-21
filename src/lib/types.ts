@@ -1,3 +1,40 @@
+export type ScreenId =
+  | 'landing'
+  | 'thinking'
+  | 'contract-gen'
+  | 'contract-doc'
+  | 'upload'
+  | 'review'
+  | 'report'
+  | 'memo'
+  | 'research'
+  | 'consultation'
+  | 'history';
+
+export type ChatKind =
+  | 'contract-review'
+  | 'contract-gen'
+  | 'memo'
+  | 'research'
+  | 'consultation'
+  | 'case';
+
+export type TaskType = 'contract' | 'review' | 'memo' | 'research' | 'consultation';
+
+export type Clause = {
+  id: string;
+  number: string;
+  title: string;
+  body: string;
+  status: RiskLevel;
+  riskScore: number;
+  reason: string;
+  decision: string;
+  legalRef: string;
+  legalBasis: string;
+  recommendation: string;
+};
+
 export type MemoSection = {
   id: string;
   title: string;

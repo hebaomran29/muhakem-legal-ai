@@ -141,7 +141,7 @@ const HOLD_AFTER   = 1000; // pause after typing completes
 const FADE_MS      = 200;  // fade in/out
 const READY_HOLD   = 500;  // "تم إعداد النتيجة" hold before transition
 const GROUP_SIZE   = 3;    // phrases per group
-const POLL_INTERVAL = 3000; // ms between polls
+const POLL_INTERVAL = 1000; // polling أسرع لعدم تأخير ظهور النتيجة
 
 /* ════════════════════════════════════════════════
    Pick N random phrases from a pool, no repeats
@@ -279,13 +279,15 @@ export function Thinking({ task, prompt, onComplete, onError }: ThinkingProps) {
 
     // Only memo & contract use the backend job flow.
     if (task !== 'memo' && task !== 'contract') {
-      // Other tasks: keep the old fixed-duration behavior.
+      // الاستشارة ليست job؛ ننتقل سريعًا إلى الشاشة التي تبدأ طلب Qdrant
+      // الحقيقي مرة واحدة عبر chat.seed().
       startNextGroup();
+      const handoffDelay = task === 'consultation' ? 650 : 900;
       schedule(() => {
         if (completedRef.current) return;
         completedRef.current = true;
         onComplete({ sections: [], case_metadata: {}, memo: '' }, '', null);
-      }, 3200);
+      }, handoffDelay);
       return () => clearTimers();
     }
 

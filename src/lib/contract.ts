@@ -1,9 +1,9 @@
-import { BASE_URL, http } from './client';
+import { BASE_URL, http } from './api/client';
 import type {
   ContractChatResponse,
   ContractJobProgress,
   ContractResult,
-} from './types';
+} from './api/types';
 
 export async function createContractJob(
   query: string,

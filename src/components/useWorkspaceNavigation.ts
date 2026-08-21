@@ -30,9 +30,10 @@ export function useWorkspaceNavigation({
   setArtifactKey,
 }: UseWorkspaceNavigationArgs) {
   const handleNavigate = useCallback((screen: ScreenId) => {
-    if (screen === 'upload') return;
-    if (screen === 'history') {
-      window.dispatchEvent(new CustomEvent('muhakem-navigate', { detail: screen }));
+    // لا يوجد Upload screen مستقل؛ زر الرفع يفتح Review مباشرة.
+    const target = screen === 'upload' ? 'review' : screen;
+    if (target === 'history' || target === 'review' || target === 'research' || target === 'memo' || target === 'contract-gen') {
+      window.dispatchEvent(new CustomEvent('muhakem-navigate', { detail: target }));
     }
   }, []);
 

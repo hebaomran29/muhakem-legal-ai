@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   X,
   Scale,
@@ -6,12 +6,12 @@ import {
   Check,
   AlertTriangle,
   XCircle,
-  FileBarChart,
 } from 'lucide-react';
 import { DocumentToolbar } from '../components/DocumentToolbar';
 import { SessionChat } from '../components/SessionChat';
 import { useSessionChat } from '../lib/useSessionChat';
-import { contractClauses } from '../lib/mock';
+import { pollReviewJob, uploadReviewFile } from '../lib/api';
+import type { ReviewResult } from '../lib/api';
 import { cn } from '../lib/cn';
 import type { Clause, RiskLevel, ScreenId } from '../lib/types';
 import type { ChatProps } from './ContractGen';
@@ -52,24 +52,36 @@ const dotColor: Record<RiskLevel, string> = {
   risk: 'bg-rose-500',
 };
 
-const preamble =
-  'إنه في يوم الاثنين الموافق ١٥/٠٦/١٤٤٧هـ، بين: شركة الأفق للتجارة ذ.م.م، ممثلة بمديرها التنفيذي السيد/ خالد بن عبدالله العتيبي (يُشار إليه بـ «الطرف الأول»)، وبين السيد/ عمر بن سعيد الحربي، يحمل الهوية الوطنية رقم ……… (يُشار إليه بـ «الطرف الثاني»). وقد اتفق الطرفان على ما يلي:';
-
 export function Review({
   initialPrompt,
   onNavigate,
   embedded = false,
   chatProps,
+  reviewData: initialReviewData = null,
+  sourceText: initialSourceText = '',
+  filename: initialFilename = '',
+  onReviewComplete,
 }: {
   initialPrompt?: string;
   onNavigate?: (s: ScreenId) => void;
   embedded?: boolean;
   chatProps?: ChatProps;
+  reviewData?: ReviewResult | null;
+  sourceText?: string;
+  filename?: string;
+  onReviewComplete?: (sessionId: string, result: ReviewResult, sourceText: string, filename: string) => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [openId, setOpenId] = useState<string | null>(null);
   const [hoverId, setHoverId] = useState<string | null>(null);
-  const [showReport, setShowReport] = useState(false);
+  const [reviewData, setReviewData] = useState<ReviewResult | null>(initialReviewData);
+  const [sourceText, setSourceText] = useState(initialSourceText);
+  const [filename, setFilename] = useState(initialFilename);
+  const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadStage, setUploadStage] = useState('');
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const localChat = useSessionChat();
   const { messages, typing, typingStatus, send, seed, context, setContextLabel, clearContext } =
     embedded && chatProps
@@ -80,8 +92,52 @@ export function Review({
     if (initialPrompt && !embedded) seed(initialPrompt);
   }, [initialPrompt, seed, embedded]);
 
-  const active = contractClauses.find((c) => c.id === openId) ?? null;
+  useEffect(() => {
+    setReviewData(initialReviewData);
+    setSourceText(initialSourceText);
+    setFilename(initialFilename);
+  }, [initialReviewData, initialSourceText, initialFilename]);
+
+  const clauses: Clause[] = (reviewData?.clauses ?? []).map((clause, index) => ({
+    id: `${clause.number}-${index}`,
+    number: clause.number,
+    title: clause.title,
+    body: clause.excerpt,
+    status: clause.status,
+    riskScore: clause.risk_score,
+    reason: clause.reason,
+    decision: clause.recommendation,
+    legalRef: clause.legal_ref ?? '',
+    legalBasis: clause.legal_basis ?? '',
+    recommendation: clause.recommendation,
+  }));
+  const active = clauses.find((c) => c.id === openId) ?? null;
   const handleClose = () => setOpenId(null);
+
+  const handleFile = useCallback(async (file: File) => {
+    setUploading(true);
+    setUploadError(null);
+    setReviewData(null);
+    setSourceText('');
+    setFilename(file.name);
+    setUploadProgress(0);
+    setUploadStage('رفع الملف');
+    try {
+      const { job_id } = await uploadReviewFile(file);
+      const completed = await pollReviewJob(job_id, (progress) => {
+        setUploadProgress(Math.round((progress.progress ?? 0) * 100));
+        setUploadStage(progress.stage || 'جارٍ المعالجة');
+      });
+      if (!completed.result) throw new Error('لم تصل نتيجة المراجعة');
+      setReviewData(completed.result);
+      setSourceText(completed.source_text ?? '');
+      onReviewComplete?.(completed.session_id, completed.result, completed.source_text ?? '', file.name);
+    } catch (error) {
+      setUploadError(error instanceof Error ? error.message : 'فشلت مراجعة الملف');
+    } finally {
+      setUploading(false);
+    }
+  }, [onReviewComplete]);
 
   useEffect(() => {
     if (!openId) return;
@@ -103,16 +159,26 @@ export function Review({
           <DocumentToolbar
             editing={editing}
             onToggleEdit={() => setEditing((v) => !v)}
-            onReport={onNavigate ? () => onNavigate('report') : undefined}
-            showReport={!!onNavigate}
+            showReport={false}
+          />
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".pdf,.docx,.txt,.md,.csv,.png,.jpg,.jpeg,.tif,.tiff,.webp"
+            className="hidden"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (file) void handleFile(file);
+              event.currentTarget.value = '';
+            }}
           />
           <button
-            onClick={() => setShowReport(true)}
-            className="flex items-center gap-1.5 rounded-xl bg-accent-500 text-white px-3.5 h-9 text-[0.78rem] font-600 hover:bg-accent-600 transition-colors shadow-soft"
-            title="تقرير"
+            disabled={uploading}
+            onClick={() => fileInputRef.current?.click()}
+            className="flex items-center gap-1.5 rounded-xl bg-accent-500 text-white px-3.5 h-9 text-[0.78rem] font-600 hover:bg-accent-600 disabled:opacity-50 transition-colors shadow-soft"
           >
-            <FileBarChart className="w-4 h-4" />
-            <span>تقرير</span>
+            <FileText className="w-4 h-4" />
+            <span>{uploading ? `${uploadProgress}%` : 'رفع عقد للمراجعة'}</span>
           </button>
         </div>
       </div>
@@ -124,19 +190,32 @@ export function Review({
             {/* Header */}
             <div className="text-center pt-9 pb-5 border-b border-sand-100">
               <h1 className="font-display font-700 text-ink text-[1.4rem] tracking-tight">
-                عقد عمل فردي
+                {reviewData?.title || filename || 'مراجعة عقد'}
               </h1>
               <p className="mt-1 text-[0.7rem] text-sand-400">
-                بموجب أنظمة العمل المرعية
+                {reviewData ? `درجة المخاطر العامة: ${reviewData.overall_score}%` : 'ارفعي ملفًا لبدء المراجعة القانونية'}
               </p>
             </div>
 
-            {/* Body — continuous paragraphs */}
+            {/* Body — extracted source and analyzed clauses */}
             <div className="px-10 md:px-14 py-7 font-sans text-[0.9rem] text-ink leading-[2.15] text-justify">
-              <p className="text-center leading-[2] mb-5 text-ink/85">{preamble}</p>
+              {uploading && (
+                <div className="mb-5 rounded-xl bg-primary-50 border border-primary-100 px-4 py-3 text-primary-700">
+                  <div className="flex items-center justify-between gap-3">
+                    <span>{uploadStage || 'جارٍ معالجة الملف'}</span>
+                    <span className="font-700">{uploadProgress}%</span>
+                  </div>
+                  <div className="mt-2 h-1.5 rounded-full bg-primary-100 overflow-hidden"><div className="h-full bg-primary-500 transition-all" style={{ width: `${uploadProgress}%` }} /></div>
+                </div>
+              )}
+              {uploadError && <div className="mb-5 rounded-xl bg-rose-50 border border-rose-100 px-4 py-3 text-rose-700 text-sm">{uploadError}</div>}
+              {!reviewData && !uploading && (
+                <div className="py-16 text-center text-sand-500">اختاري ملف PDF أو Word أو صورة لبدء مراجعة حقيقية.</div>
+              )}
+              {reviewData && sourceText && <p className="text-center leading-[2] mb-5 text-ink/85 whitespace-pre-wrap">{sourceText}</p>}
 
               <div className="space-y-2.5">
-                {contractClauses.map((c) => {
+                {clauses.map((c) => {
                   const isActive = openId === c.id;
                   const isHover = hoverId === c.id;
                   const bg = isActive
@@ -198,10 +277,6 @@ export function Review({
       {active && <ClausePopup clause={active} onClose={handleClose} />}
 
       {/* ── Report overlay ── */}
-      {showReport && (
-        <ReportOverlay onClose={() => setShowReport(false)} onNavigate={onNavigate} />
-      )}
-
       <SessionChat
         sessionId={embedded ? 'workspace' : 'review'}
         messages={messages}
