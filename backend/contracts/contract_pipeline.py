@@ -683,8 +683,33 @@ def generate_contract(user_query: str, pdf_context: str = "") -> dict:
     contract_type_ar = contract_data.get("contract_type_ar", "")
     specific_clauses = contract_data.get("specific_clauses", [])
     category_filter = contract_data.get("legal_domains") or None
-    expected_n = len(specific_clauses)
-    print(f"ℹ️ هيتم توليد {expected_n} بند لنوع العقد '{contract_type_key}' (مع RAG خاص لكل بند).")
+
+    # التوليد الأولي يقتصر على البنود الإلزامية فقط. البنود recommended
+    # وconditional تظهر كاقتراحات pending حتى تختار المستخدمة ما تحتاجه.
+    mandatory_clauses = [
+        clause for clause in specific_clauses
+        if clause.get("obligation_level", "mandatory") == "mandatory"
+    ]
+    if not mandatory_clauses:
+        # توافق مع كتالوجات قديمة لا تحتوي obligation_level.
+        mandatory_clauses = list(specific_clauses)
+    pending_clauses = [
+        {
+            "clause_id": clause.get("clause_id"),
+            "title": clause.get("title", ""),
+            "description": clause.get("description") or "",
+            "obligation_level": clause.get("obligation_level", "recommended"),
+            "search_keywords": clause.get("search_keywords") or [],
+            "legal_basis": clause.get("legal_basis"),
+        }
+        for clause in specific_clauses
+        if clause not in mandatory_clauses
+    ]
+    expected_n = len(mandatory_clauses)
+    print(
+        f"ℹ️ هيتم توليد {expected_n} بند إلزامي لنوع العقد '{contract_type_key}'. "
+        f"وسيتم اقتراح {len(pending_clauses)} بند اختياري لاحقًا."
+    )
 
     # تحميل موارد RAG مرة واحدة فقط للأداء
     rag_resources = load_rag_resources()
@@ -695,7 +720,7 @@ def generate_contract(user_query: str, pdf_context: str = "") -> dict:
         bm25_data = build_bm25_index(rag_resources["qdrant_client"], COLLECTION_LAWS)
 
     body_parts = []
-    for idx, clause in enumerate(specific_clauses, start=1):
+    for idx, clause in enumerate(mandatory_clauses, start=1):
         title = clause.get("title", "")
         description = clause.get("description") or ""
         keywords = clause.get("search_keywords") or []
@@ -733,6 +758,7 @@ def generate_contract(user_query: str, pdf_context: str = "") -> dict:
         "docx_path": docx_path,
         "contract_type_key": contract_type_key,
         "clause_validation": clause_validation,
+        "pending_clauses": pending_clauses,
     }
 
 # ──────────────────────────────────────────────────────────────────
