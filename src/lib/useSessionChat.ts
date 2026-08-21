@@ -70,6 +70,7 @@ export function useSessionChat() {
   // رد يرجع من /api/consultation/chat وبيتبعت في أي رسالة تالية عشان
   // الأسئلة التابعة تفتكر السياق (ConversationState في الباك إند).
   const consultationSessionIdRef = useRef<string | null>(null);
+  const consultationSeededRef = useRef(false);
 
   const clearStatusTimer = useCallback(() => {
     if (statusTimerRef.current) {
@@ -173,13 +174,11 @@ export function useSessionChat() {
       };
 
       if (kind === 'consultation') {
-        let shouldSeed = false;
-        setMessages((prev) => {
-          if (prev.length > 0) return prev;
-          shouldSeed = true;
-          return [userMsg];
-        });
-        if (!shouldSeed) return;
+        // لا نعتمد على متغير يتغير داخل setState؛ React قد يؤجل updater.
+        // الـref يضمن أن أول سؤال يبدأ الطلب مرة واحدة فقط.
+        if (consultationSeededRef.current) return;
+        consultationSeededRef.current = true;
+        setMessages((prev) => (prev.length > 0 ? prev : [userMsg]));
         startTypingCycle(kind);
         askConsultation(initialText).then((assistantMsg) => {
           clearStatusTimer();
@@ -210,6 +209,7 @@ export function useSessionChat() {
     setTypingStatus('');
     setContext(null);
     consultationSessionIdRef.current = null;
+    consultationSeededRef.current = false;
   }, [clearStatusTimer]);
 
   const setContextLabel = useCallback((label: string | null) => {
