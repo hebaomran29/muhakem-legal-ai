@@ -117,3 +117,27 @@ def require_session_access(session_id: str, user: CurrentUser) -> None:
     بتاعة مستخدمة تانية (حتى لو نفس الـ firm نظريًا)، الطلب هيترفض."""
     if not repo.session_belongs_to_user(session_id, user.firm_id, user.user_id):
         raise HTTPException(status_code=404, detail="الجلسة دي مش موجودة")
+
+
+def require_job_access(job: dict | None, user: CurrentUser) -> dict:
+    """يثبت ملكية job قبل أي قراءة أو تعديل أو تحميل.
+
+    الـ job UUID ليس authorization. الوظائف الجديدة تحفظ user_id/firm_id من
+    لحظة الإنشاء، ولو لها session دائم نعيد استخدام require_session_access.
+    في كل حالات الفشل نرجع 404 موحدًا حتى لا نكشف هل job لمستخدم آخر موجود أم لا.
+    """
+    not_found = HTTPException(status_code=404, detail="العملية دي مش موجودة")
+    if job is None:
+        raise not_found
+
+    session_id = job.get("db_session_id")
+    if session_id:
+        try:
+            require_session_access(session_id, user)
+        except HTTPException:
+            raise not_found
+        return job
+
+    if job.get("user_id") != user.user_id or job.get("firm_id") != user.firm_id:
+        raise not_found
+    return job

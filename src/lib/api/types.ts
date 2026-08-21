@@ -21,6 +21,8 @@ export type MemoResult = {
   memo: string;
 };
 
+export type RiskLevel = 'safe' | 'review' | 'risk';
+
 export type JobStatus = 'queued' | 'processing' | 'completed' | 'failed';
 
 export type JobProgress = {
@@ -61,8 +63,19 @@ export type ChatResponse = {
 
 export type ContractClause = {
   index: number;
+  clause_id?: string | null;
   title: string;
   body: string;
+  obligation_level?: 'mandatory' | 'recommended' | 'conditional' | 'optional' | null;
+};
+
+export type PendingContractClause = {
+  clause_id: string;
+  title: string;
+  description: string;
+  obligation_level?: 'recommended' | 'conditional' | 'optional' | null;
+  search_keywords?: string[];
+  legal_basis?: string | null;
 };
 
 export type ContractResult = {
@@ -78,6 +91,7 @@ export type ContractResult = {
     found_count: number;
     expected_count: number;
   } | null;
+  pending_clauses?: PendingContractClause[];
   docx_path: string | null;
 };
 
@@ -99,8 +113,46 @@ export type ContractChatChangeCard = {
 export type ContractChatResponse = {
   reply: string;
   updated_clauses: ContractClause[] | null;
+  pending_clauses?: PendingContractClause[];
+  updated_result?: ContractResult;
   change_card: ContractChatChangeCard | null;
   switch_task: SwitchTaskSignal | null;
+};
+
+export type ReviewClause = {
+  number: string;
+  title: string;
+  excerpt: string;
+  status: RiskLevel;
+  risk_score: number;
+  reason: string;
+  legal_ref: string | null;
+  legal_basis: string | null;
+  recommendation: string;
+};
+
+export type ReviewResult = {
+  title: string;
+  summary: string;
+  overall_risk: RiskLevel;
+  overall_score: number;
+  clauses: ReviewClause[];
+  recommendations: string[];
+  disclaimer: string;
+  extraction_method?: string;
+};
+
+export type ReviewJobProgress = {
+  job_id: string;
+  session_id: string;
+  filename: string;
+  status: JobStatus;
+  progress: number;
+  stage: string;
+  extraction_method?: string | null;
+  source_text?: string | null;
+  result?: ReviewResult | null;
+  error?: string | null;
 };
 
 export type RouterAPIRequest = {

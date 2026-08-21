@@ -78,14 +78,61 @@ def get_memo_result(session_id: str) -> dict | None:
 
 # ── Contract results ─────────────────────────────────────────────
 
-def save_contract_result(session_id: str, clauses: list, contract_type_ar: str | None) -> None:
-    client.insert("contract_results", {
-        "session_id": session_id, "clauses": clauses, "contract_type_ar": contract_type_ar,
-    }, on_conflict="session_id", merge=True)
+_UNSET = object()
+
+
+def save_contract_result(
+    session_id: str,
+    clauses: list,
+    contract_type_ar: str | None | object = _UNSET,
+    *,
+    preamble: str | None | object = _UNSET,
+    closing: str | None | object = _UNSET,
+    contract_text: str | None | object = _UNSET,
+    contract_type_key: str | None | object = _UNSET,
+    clause_validation: dict | None | object = _UNSET,
+    pending_clauses: list | None | object = _UNSET,
+) -> None:
+    """يحفظ artifact أو patch دون مسح حقول omitted.
+
+    omitted field = لا يُرسل إلى upsert وبالتالي تبقى قيمته الحالية.
+    explicit None أو empty string = clearing مقصود ويُرسل كما هو.
+    """
+    row = {"session_id": session_id, "clauses": clauses}
+    optional_fields = {
+        "contract_type_ar": contract_type_ar,
+        "preamble": preamble,
+        "closing": closing,
+        "contract_text": contract_text,
+        "contract_type_key": contract_type_key,
+        "clause_validation": clause_validation,
+        "pending_clauses": pending_clauses,
+    }
+    row.update({key: value for key, value in optional_fields.items() if value is not _UNSET})
+    client.insert("contract_results", row, on_conflict="session_id", merge=True)
 
 
 def get_contract_result(session_id: str) -> dict | None:
     return client.select("contract_results", {"session_id": f"eq.{session_id}"}, single=True)
+
+
+# ── Review results ────────────────────────────────────────────────
+
+def save_review_result(session_id: str, filename: str, content_type: str,
+                       extraction_method: str, source_text: str,
+                       result: dict) -> None:
+    client.insert("review_results", {
+        "session_id": session_id,
+        "filename": filename,
+        "content_type": content_type,
+        "extraction_method": extraction_method,
+        "source_text": source_text,
+        "result": result,
+    }, on_conflict="session_id", merge=True)
+
+
+def get_review_result(session_id: str) -> dict | None:
+    return client.select("review_results", {"session_id": f"eq.{session_id}"}, single=True)
 
 
 # ── Chat history ─────────────────────────────────────────────────

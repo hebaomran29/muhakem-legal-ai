@@ -96,7 +96,15 @@ export function useSessionChat() {
     try {
       const res = await sendConsultationChat(text, consultationSessionIdRef.current);
       if (res.session_id) consultationSessionIdRef.current = res.session_id;
-      return { id: `s-a${idRef.current++}`, role: 'assistant', text: res.reply };
+      return {
+        id: `s-a${idRef.current++}`,
+        role: 'assistant',
+        text: res.reply,
+        consultation: {
+          needsClarification: res.needs_clarification,
+          routing: res.routing ?? null,
+        },
+      };
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'حدث خطأ غير متوقع';
       return {

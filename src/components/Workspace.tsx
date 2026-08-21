@@ -20,8 +20,9 @@ import {
   type WorkspacePhase,
 } from './workspaceUtils';
 import { useMemory } from '../lib/memory';
+import { saveSession, syncFromRemote } from '../lib/sessionStore';
 import type { ScreenId, TaskType } from '../lib/types';
-import type { MemoResult, ContractResult, SwitchTaskSignal } from '../lib/api';
+import type { MemoResult, ContractResult, ReviewResult, SwitchTaskSignal } from '../lib/api';
 import type { MemoChatMessage } from '../lib/useMemoChat';
 import type { ContractChatMessage } from '../lib/useContractChat';
 import { cn } from '../lib/cn';
@@ -39,6 +40,9 @@ export function Workspace() {
   const [memoJobId, setMemoJobId] = useState<string | null>(null);
   const [contractData, setContractData] = useState<ContractResult | null>(null);
   const [contractJobId, setContractJobId] = useState<string | null>(null);
+  const [reviewData, setReviewData] = useState<ReviewResult | null>(null);
+  const [reviewSourceText, setReviewSourceText] = useState('');
+  const [reviewFilename, setReviewFilename] = useState('');
   const [memoInitialChatMessages, setMemoInitialChatMessages] = useState<MemoChatMessage[] | undefined>(undefined);
   const [contractInitialChatMessages, setContractInitialChatMessages] = useState<ContractChatMessage[] | undefined>(undefined);
   // لو مش null، يبقى احنا بنكمل جلسة موجودة — استخدمي نفس الـ id بدل ما
@@ -52,6 +56,15 @@ export function Workspace() {
   const startThinking = useCallback((kind: TaskKind, prompt: string) => {
     setThinkingKind(kind);
     setInitialPrompt(prompt);
+    if (kind === 'review') {
+      setReviewData(null);
+      setReviewSourceText('');
+      setReviewFilename('');
+      setActiveKind('review');
+      setPhase('artifact');
+      setArtifactKey((key) => key + 1);
+      return;
+    }
     setPhase('thinking');
   }, []);
 
@@ -71,6 +84,9 @@ export function Workspace() {
     setContractData,
     setContractJobId,
     setContractInitialChatMessages,
+    setReviewData,
+    setReviewSourceText,
+    setReviewFilename,
   });
 
   const { persistThinkingResult } = useWorkspaceResultPersistence({
@@ -84,6 +100,28 @@ export function Workspace() {
     setContractData,
     setContractJobId,
   });
+
+  /* ── Thinking complete → show artifact ── */
+  const handleReviewComplete = useCallback((sessionId: string, result: ReviewResult, sourceText: string, filename: string) => {
+    setCurrentSessionId(sessionId);
+    setReviewData(result);
+    setReviewSourceText(sourceText);
+    setReviewFilename(filename);
+    saveSession({
+      id: sessionId,
+      title: result.title || filename,
+      kind: 'contract-review',
+      meta: result.summary || 'مراجعة عقد مكتملة',
+      preview: result.summary || 'مراجعة عقد مكتملة',
+      tags: ['مراجعة عقد'],
+      prompt: filename,
+      jobId: null,
+      screenId: 'review',
+      pinned: false,
+      data: { ...result, source_text: sourceText, filename },
+    });
+    void syncFromRemote();
+  }, []);
 
   /* ── Thinking complete → show artifact ── */
   const handleThinkingComplete = useCallback((result: MemoResult | ContractResult, jobId: string, dbSessionId: string | null) => {
@@ -185,8 +223,12 @@ export function Workspace() {
             memoJobId={memoJobId}
             contractData={contractData}
             contractJobId={contractJobId}
+            reviewData={reviewData}
+            reviewSourceText={reviewSourceText}
+            reviewFilename={reviewFilename}
             memoInitialChatMessages={memoInitialChatMessages}
             contractInitialChatMessages={contractInitialChatMessages}
+            onReviewComplete={handleReviewComplete}
             onSwitchTask={handleChatSwitchTask}
           />
         </div>

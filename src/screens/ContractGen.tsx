@@ -5,10 +5,10 @@ import {
 } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { useContractChat, type ContractChatMessage } from '../lib/useContractChat';
-import {
-  type ContractResult, type ContractClause, type ContractChatChangeCard, type SwitchTaskSignal,
-  downloadContractDocx,
+import type {
+  ContractResult, ContractClause, PendingContractClause, ContractChatChangeCard, SwitchTaskSignal,
 } from '../lib/api';
+import { addContractClause, downloadContractDocx } from '../lib/api/contract';
 import { Badge } from '../components/ui';
 
 /** يزيل تنسيق Markdown من النص */
@@ -70,6 +70,9 @@ export function ContractGen({
   const [preamble, setPreamble] = useState(contractData?.preamble ?? '');
   const [closing, setClosing] = useState(contractData?.closing ?? '');
   const [contractTypeAr, setContractTypeAr] = useState(contractData?.contract_type_ar ?? '');
+  const [pendingClauses, setPendingClauses] = useState<PendingContractClause[]>(contractData?.pending_clauses ?? []);
+  const [addingClauseId, setAddingClauseId] = useState<string | null>(null);
+  const [clauseAddError, setClauseAddError] = useState<string | null>(null);
 
   useEffect(() => {
     if (contractData) {
@@ -77,8 +80,32 @@ export function ContractGen({
       setPreamble(contractData.preamble ?? '');
       setClosing(contractData.closing ?? '');
       setContractTypeAr(contractData.contract_type_ar ?? '');
+      setPendingClauses(contractData.pending_clauses ?? []);
     }
   }, [contractData]);
+
+  const handleAddPendingClause = useCallback(async (clauseId: string) => {
+    if (!jobId || addingClauseId) return;
+    setAddingClauseId(clauseId);
+    setClauseAddError(null);
+    try {
+      const response = await addContractClause(jobId, clauseId);
+      if (response.updated_result) {
+        setLiveClauses(response.updated_result.clauses ?? []);
+        setPreamble(response.updated_result.preamble ?? '');
+        setClosing(response.updated_result.closing ?? '');
+        setContractTypeAr(response.updated_result.contract_type_ar ?? '');
+        setPendingClauses(response.updated_result.pending_clauses ?? response.pending_clauses ?? []);
+      } else {
+        setLiveClauses(response.updated_clauses ?? []);
+        setPendingClauses(response.pending_clauses ?? []);
+      }
+    } catch (error) {
+      setClauseAddError(error instanceof Error ? error.message : 'فشل إضافة البند');
+    } finally {
+      setAddingClauseId(null);
+    }
+  }, [jobId, addingClauseId]);
 
   const handleClausesUpdate = useCallback((updated: ContractClause[]) => {
     setLiveClauses(updated);
@@ -345,6 +372,37 @@ export function ContractGen({
                     </section>
                   ))}
                 </div>
+
+                {pendingClauses.length > 0 && (
+                  <section className="mt-10 pt-6 border-t border-gold-200 bg-gold-50/40 rounded-2xl p-5 no-print">
+                    <div className="flex items-center justify-between gap-3 mb-2">
+                      <div>
+                        <h2 className="font-display font-700 text-ink text-base">بنود مقترحة للعقد</h2>
+                        <p className="mt-1 text-[0.76rem] text-sand-500">يمكنك إضافة أي بند دون إعادة توليد العقد كاملًا.</p>
+                      </div>
+                      <Badge tone="gold" size="sm">{pendingClauses.length} متاح</Badge>
+                    </div>
+                    <div className="mt-4 space-y-2">
+                      {pendingClauses.map((clause) => (
+                        <div key={clause.clause_id} className="flex items-center gap-3 rounded-xl bg-white border border-gold-200 px-3 py-2.5">
+                          <div className="min-w-0 flex-1">
+                            <div className="text-[0.82rem] font-700 text-ink">{clause.title}</div>
+                            <div className="mt-0.5 text-[0.7rem] text-sand-500 line-clamp-2">{clause.description}</div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleAddPendingClause(clause.clause_id)}
+                            disabled={!jobId || addingClauseId !== null}
+                            className="shrink-0 rounded-lg bg-gold-500 px-3 py-1.5 text-[0.72rem] font-700 text-white hover:bg-gold-600 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {addingClauseId === clause.clause_id ? 'جارٍ الإضافة...' : 'إضافة'}
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                    {clauseAddError && <p className="mt-3 text-[0.72rem] text-error">{clauseAddError}</p>}
+                  </section>
+                )}
 
                 {/* Closing / Signature */}
                 {closing && (

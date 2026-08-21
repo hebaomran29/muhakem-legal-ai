@@ -49,8 +49,22 @@ create table if not exists contract_results (
   session_id       uuid primary key references sessions(id) on delete cascade,
   clauses          jsonb not null,       -- نفس شكل ContractClause[] بتاع الفرونت
   contract_type_ar text,
+  preamble         text,
+  closing          text,
+  contract_text    text,
+  contract_type_key text,
+  clause_validation jsonb,
+  pending_clauses  jsonb,
   updated_at       timestamptz not null default now()
 );
+
+-- Backward-compatible additions for databases created before full artifact persistence.
+alter table contract_results add column if not exists preamble text;
+alter table contract_results add column if not exists closing text;
+alter table contract_results add column if not exists contract_text text;
+alter table contract_results add column if not exists contract_type_key text;
+alter table contract_results add column if not exists clause_validation jsonb;
+alter table contract_results add column if not exists pending_clauses jsonb;
 
 -- ── سجل شات التعديل لكل جلسة ───────────────────────────────────
 create table if not exists chat_messages (

@@ -3,7 +3,7 @@ import { Review } from '../screens/Review';
 import { Memo } from '../screens/Memo';
 import { Research } from '../screens/Research';
 import { Consultation } from '../screens/Consultation';
-import type { ContractResult, MemoResult, SwitchTaskSignal } from '../lib/api';
+import type { ContractResult, MemoResult, ReviewResult, SwitchTaskSignal } from '../lib/api';
 import type { MemoChatMessage } from '../lib/useMemoChat';
 import type { ContractChatMessage } from '../lib/useContractChat';
 import type { ArtifactType } from './workspaceUtils';
@@ -16,6 +16,10 @@ export type ArtifactRendererProps = {
   memoJobId: string | null;
   contractData: ContractResult | null;
   contractJobId: string | null;
+  reviewData: ReviewResult | null;
+  reviewSourceText: string;
+  reviewFilename: string;
+  onReviewComplete: (sessionId: string, result: ReviewResult, sourceText: string, filename: string) => void;
   memoInitialChatMessages: MemoChatMessage[] | undefined;
   contractInitialChatMessages: ContractChatMessage[] | undefined;
   onSwitchTask: (signal: SwitchTaskSignal) => void;
@@ -29,6 +33,10 @@ export function ArtifactRenderer({
   memoJobId,
   contractData,
   contractJobId,
+  reviewData,
+  reviewSourceText,
+  reviewFilename,
+  onReviewComplete,
   memoInitialChatMessages,
   contractInitialChatMessages,
   onSwitchTask,
@@ -49,7 +57,17 @@ export function ArtifactRenderer({
         />
       );
     case 'review':
-      return <Review initialPrompt={initialPrompt} embedded chatProps={chatProps} />;
+      return (
+        <Review
+          initialPrompt={initialPrompt}
+          embedded
+          chatProps={chatProps}
+          reviewData={reviewData}
+          sourceText={reviewSourceText}
+          filename={reviewFilename}
+          onReviewComplete={onReviewComplete}
+        />
+      );
     case 'memo':
       return (
         <Memo

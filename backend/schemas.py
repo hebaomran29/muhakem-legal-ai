@@ -81,6 +81,11 @@ class ContractChatEditRequest(BaseModel):
     message: str
 
 
+class AddContractClauseRequest(BaseModel):
+    job_id: str
+    clause_id: str
+
+
 class CreateFirmRequest(BaseModel):
     name: str
 

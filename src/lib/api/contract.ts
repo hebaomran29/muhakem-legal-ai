@@ -2,6 +2,7 @@ import { BASE_URL, http } from './client';
 import type {
   ContractChatResponse,
   ContractJobProgress,
+  ContractResult,
 } from './types';
 
 export async function createContractJob(
@@ -17,6 +18,17 @@ export async function createContractJob(
 export async function getContractJob(jobId: string): Promise<ContractJobProgress> {
   if (!BASE_URL) throw new Error('No API base URL');
   return http<ContractJobProgress>(`/api/contract/${jobId}`);
+}
+
+export async function addContractClause(
+  jobId: string,
+  clauseId: string,
+): Promise<ContractChatResponse & { updated_result?: ContractResult }> {
+  if (!BASE_URL) throw new Error('No API base URL');
+  return http<ContractChatResponse & { updated_result?: ContractResult }>('/api/contract/clause/add', {
+    method: 'POST',
+    body: JSON.stringify({ job_id: jobId, clause_id: clauseId }),
+  });
 }
 
 export async function sendContractChat(

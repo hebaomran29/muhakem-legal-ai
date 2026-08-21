@@ -10,9 +10,14 @@ numpy==2.2.1
 python-dotenv==1.0.1
 pypdf
 python-docx
+python-multipart==0.0.20
+google-genai>=1.20.0
+Pillow>=10.0.0
 psycopg2-binary==2.9.10
 PyJWT==2.10.1
 cryptography==44.0.0
 requests==2.32.3
+multipart==0.0.20
+google-genai==2.19.0
 
 rank-bm25

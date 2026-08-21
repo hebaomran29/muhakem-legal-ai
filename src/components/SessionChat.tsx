@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { Scale, Paperclip, ArrowUp, ChevronDown, Check, X, GitCompare, BookOpen, Pencil, AlertTriangle } from 'lucide-react';
 import { cn } from '../lib/cn';
+import type { ConsultationRouting } from '../lib/api';
 
 export type ChangeCard = {
   section_id: string;
@@ -15,6 +16,10 @@ export type SessionMessage = {
   text: string;
   changeCard?: ChangeCard;
   warnings?: string[];
+  consultation?: {
+    needsClarification?: boolean;
+    routing?: ConsultationRouting | null;
+  };
 };
 
 type Props = {

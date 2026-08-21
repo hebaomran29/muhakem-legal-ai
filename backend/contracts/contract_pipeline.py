@@ -1,3 +1,75 @@
+# ── Active runtime imports/configuration ─────────────────────────────────────
+import os
+import re
+import json
+import pickle
+import threading
+import warnings
+from pathlib import Path as _Path
+
+from dotenv import load_dotenv
+from openai import OpenAI
+from qdrant_client import QdrantClient
+from qdrant_client.models import Filter, FieldCondition, MatchAny
+from sentence_transformers import SentenceTransformer
+from pypdf import PdfReader
+from docx import Document
+from docx.shared import Pt, Inches, RGBColor
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from rank_bm25 import BM25Okapi
+
+warnings.filterwarnings("ignore")
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+load_dotenv()
+
+QDRANT_URL = os.environ.get("QDRANT_URL", "")
+QDRANT_KEY = os.environ.get("QDRANT_API_KEY", os.environ.get("QDRANT_KEY", ""))
+OLLAMA_MODEL = os.environ.get("LLM_MODEL", "qwen3:14b")
+OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+CLAUSE_TYPES_PATH = str(_Path(__file__).with_name("muhakkim_specific_clauses.json"))
+CLAUSE_MAX_TOKENS = int(os.environ.get("CONTRACT_CLAUSE_MAX_TOKENS", "2500"))
+INTRO_MAX_TOKENS = int(os.environ.get("CONTRACT_INTRO_MAX_TOKENS", "1200"))
+
+COLLECTION_LAWS = "laws_only"
+COLLECTION_CONTRACTS = "legal_contracts"
+EMBED_MODEL_CONTRACTS = "intfloat/multilingual-e5-base"
+EMBED_MODEL_LAWS = "mohamed2811/Muffakir_Embedding_V2"
+LAWS_SCORE_THRESHOLD = 0.72
+BM25_CACHE_PATH = str(_Path(__file__).with_name("bm25_laws_cache.pkl"))
+RRF_K = 60
+HYBRID_CANDIDATE_K = 15
+
+CONTRACT_TYPE_KEYWORDS = {
+    "sale_civil": ["بيع", "شراء", "مبيع", "بائع", "مشتري", "بيع وشراء"],
+    "sale_commercial": ["بيع تجاري", "عقد تجاري", "تجاري", "بضاعة", "بضائع"],
+    "sale_administrative": ["مناقصة", "مزايدة", "عقد إداري", "بيع إداري", "جهة إدارية", "لجنة البت"],
+    "lease": ["ايجار", "إيجار", "استئجار", "مؤجر", "مستأجر", "تأجير"],
+    "contracting": ["مقاولة", "مقاول", "مقاولات", "تنفيذ أعمال", "بناء", "إنشاءات"],
+    "partnership": ["شراكة", "شركة", "شريك", "تأسيس شركة", "حصص"],
+    "deposit": ["وديعة", "إيداع", "ايداع", "استيداع", "مودع"],
+    "guarantee": ["كفالة", "ضمان", "كفيل", "ضامن"],
+    "employment_contract": ["عمل", "توظيف", "موظف", "عامل", "وظيفة", "تشغيل"],
+    "agency": ["وكالة", "وكيل", "موكل", "تفويض"],
+}
+
+CLAUSE_SYSTEM_PROMPT = """أنت مستشار قانوني مصري متخصص في صياغة العقود بالعربية الفصحى الرسمية.
+
+مهمتك محدودة جداً: صياغة فقرة قانونية واحدة فقط (بند واحد) تعبّر عن الالتزام
+التالي بأسلوب تعاقدي ملزم، دقيق، ومفصّل (بحد أدنى 100-120 كلمة).
+
+قواعد صارمة:
+- ممنوع كتابة عنوان البند أو رقمه أو كلمة البند؛ الكود سيضعها.
+- ممنوع أي رموز Markdown أو مقدمة أو تعليق.
+- المرجع القانوني هو المصدر الوحيد الملزم لأي رقم أو نسبة أو مدة.
+- إذا لم يوجد مرجع قانوني، اكتبي صياغة عامة دقيقة بدون اختراع أرقام.
+- ممنوع الاختراع أو الإضافة من خارج البيانات المعطاة.
+
+نوع العقد: {contract_type_ar}
+عنوان البند: {clause_title}
+وصف الالتزام: {clause_description}
+{laws_context_block}
+اكتبي فقرة الالتزام الآن مباشرة بدون عنوان أو ترقيم."""
+
 # import warnings
 # warnings.filterwarnings("ignore")
 # import os
@@ -96,7 +168,7 @@ from qdrant_client.models import Filter, FieldCondition, MatchAny
 # # ──────────────────────────────────────────────────────────────────
 # # تحميل موارد الـ RAG
 # # ──────────────────────────────────────────────────────────────────
-# _rag_resources_cache: dict | None = None
+_rag_resources_cache: dict | None = None
 _rag_resources_lock = threading.Lock()
 _bm25_cache: dict[tuple[str, str], dict] = {}
 _bm25_cache_lock = threading.Lock()

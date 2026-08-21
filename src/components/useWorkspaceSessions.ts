@@ -1,7 +1,7 @@
 import { useCallback } from 'react';
 import { getAccessToken } from '../lib/auth';
 import { getRemoteSession, resumeContractSession, resumeMemoSession } from '../lib/api';
-import type { ContractResult, MemoResult } from '../lib/api';
+import type { ContractResult, MemoResult, ReviewResult } from '../lib/api';
 import type { MemoChatMessage } from '../lib/useMemoChat';
 import type { ContractChatMessage } from '../lib/useContractChat';
 import type { TaskKind } from '../lib/useSessionChat';
@@ -33,6 +33,9 @@ type UseWorkspaceSessionsArgs = {
   setContractData: (result: ContractResult | null) => void;
   setContractJobId: (jobId: string | null) => void;
   setContractInitialChatMessages: (messages: ContractChatMessage[] | undefined) => void;
+  setReviewData: (result: ReviewResult | null) => void;
+  setReviewSourceText: (text: string) => void;
+  setReviewFilename: (filename: string) => void;
 };
 
 const kindMap: Partial<Record<string, ArtifactType>> = {
@@ -59,6 +62,9 @@ export function useWorkspaceSessions({
   setContractData,
   setContractJobId,
   setContractInitialChatMessages,
+  setReviewData,
+  setReviewSourceText,
+  setReviewFilename,
 }: UseWorkspaceSessionsArgs) {
   const handleNewSession = useCallback(() => {
     chat.reset();
@@ -72,8 +78,11 @@ export function useWorkspaceSessions({
     setContractData(null);
     setContractJobId(null);
     setContractInitialChatMessages(undefined);
+    setReviewData(null);
+    setReviewSourceText('');
+    setReviewFilename('');
     setCurrentSessionId(null);
-  }, [chat, memory, setPhase, setActiveKind, setInitialPrompt, setMemoData, setMemoJobId, setMemoInitialChatMessages, setContractData, setContractJobId, setContractInitialChatMessages, setCurrentSessionId]);
+  }, [chat, memory, setPhase, setActiveKind, setInitialPrompt, setMemoData, setMemoJobId, setMemoInitialChatMessages, setContractData, setContractJobId, setContractInitialChatMessages, setReviewData, setReviewSourceText, setReviewFilename, setCurrentSessionId]);
 
   const handleOpenSession = useCallback(async (session: SessionCard) => {
     const kind = kindMap[session.screenId];
@@ -93,6 +102,11 @@ export function useWorkspaceSessions({
         setContractData(session.data as ContractResult);
         setContractJobId(session.jobId ?? null);
         setContractInitialChatMessages(undefined);
+      } else if (kind === 'review') {
+        const reviewData = session.data as ReviewResult & { source_text?: string; filename?: string };
+        setReviewData(reviewData);
+        setReviewSourceText(reviewData.source_text ?? '');
+        setReviewFilename(reviewData.filename ?? session.title ?? 'مستند');
       }
 
       setActiveKind(kind);
@@ -101,7 +115,7 @@ export function useWorkspaceSessions({
       return;
     }
 
-    if (getAccessToken() && (kind === 'memo' || kind === 'contract')) {
+    if (getAccessToken() && (kind === 'memo' || kind === 'contract' || kind === 'review')) {
       try {
         const { result, chat_history } = await getRemoteSession(session.id);
         if (result) {
@@ -122,16 +136,17 @@ export function useWorkspaceSessions({
             resumeMemoSession(session.id)
               .then(({ job_id }) => setMemoJobId(job_id))
               .catch((error) => console.warn('فشل تفعيل الجلسة للتعديل بالشات:', error));
-          } else {
+          } else if (kind === 'contract') {
             const clauses = (result.clauses as ContractResult['clauses']) ?? [];
             const contractResult: ContractResult = {
-              contract_text: clauses.map((clause) => clause.body ?? '').join('\n\n'),
-              preamble: '',
-              closing: '',
+              contract_text: (result.contract_text as string) ?? clauses.map((clause) => clause.body ?? '').join('\n\n'),
+              preamble: (result.preamble as string) ?? '',
+              closing: (result.closing as string) ?? '',
               clauses,
-              contract_type_key: null,
+              contract_type_key: (result.contract_type_key as string) ?? null,
               contract_type_ar: (result.contract_type_ar as string) ?? '',
-              clause_validation: null,
+              clause_validation: (result.clause_validation as ContractResult['clause_validation']) ?? null,
+              pending_clauses: (result.pending_clauses as ContractResult['pending_clauses']) ?? [],
               docx_path: null,
             };
             setContractData(contractResult);
@@ -140,6 +155,11 @@ export function useWorkspaceSessions({
             resumeContractSession(session.id)
               .then(({ job_id }) => setContractJobId(job_id))
               .catch((error) => console.warn('فشل تفعيل جلسة العقد بالشات:', error));
+          } else if (kind === 'review') {
+            const persisted = result as { result?: ReviewResult; source_text?: string; filename?: string };
+            setReviewData(persisted.result ?? null);
+            setReviewSourceText(persisted.source_text ?? '');
+            setReviewFilename(persisted.filename ?? session.title ?? 'مستند');
           }
 
           setActiveKind(kind);
@@ -157,7 +177,7 @@ export function useWorkspaceSessions({
     setCurrentSessionId(session.id);
     setInitialPrompt(session.prompt);
     startThinking(kind as TaskKind, session.prompt);
-  }, [chat, memory, setCurrentSessionId, setInitialPrompt, setMemoData, setMemoJobId, setMemoInitialChatMessages, setContractData, setContractJobId, setContractInitialChatMessages, setActiveKind, setPhase, setArtifactKey, handleNewSession, startThinking]);
+  }, [chat, memory, setCurrentSessionId, setInitialPrompt, setMemoData, setMemoJobId, setMemoInitialChatMessages, setContractData, setContractJobId, setContractInitialChatMessages, setReviewData, setReviewSourceText, setReviewFilename, setActiveKind, setPhase, setArtifactKey, handleNewSession, startThinking]);
 
   return { handleNewSession, handleOpenSession };
 }
